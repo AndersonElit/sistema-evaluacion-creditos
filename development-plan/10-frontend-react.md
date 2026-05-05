@@ -13,8 +13,8 @@ El Frontend consume `ms-credit-evaluation` con el JWT de Keycloak.
 ## 1. Crear la aplicación
 
 ```bash
-npm create vite@latest frontend -- --template react-ts
 cd frontend
+npm create vite@latest . -- --template react-ts
 npm install
 npm install keycloak-js axios
 ```

@@ -260,7 +260,7 @@ public interface NotificationPort {
 
 ```bash
 # Compilar los módulos de dominio y aplicación
-cd ms-credit-evaluation
+cd backend/ms-credit-evaluation
 mvn compile -pl domain/model,application/use-cases
 # BUILD SUCCESS sin errores
 ```
@@ -578,7 +578,7 @@ class EvaluacionCreditoTest {
 ### Ejecutar tests del dominio
 
 ```bash
-cd ms-credit-evaluation
+cd backend/ms-credit-evaluation
 mvn test -pl domain/model
 # Resultado esperado: BUILD SUCCESS — 20+ tests en verde
 ```

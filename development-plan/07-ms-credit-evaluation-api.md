@@ -624,7 +624,7 @@ class CreditEvaluationResourceIT {
 ### Ejecutar
 
 ```bash
-cd ms-credit-evaluation
+cd backend/ms-credit-evaluation
 # Requiere Docker (WireMock y DevServices PostgreSQL)
 mvn test -pl infrastructure/entry-points/app -Dquarkus.test.profile=test
 ```

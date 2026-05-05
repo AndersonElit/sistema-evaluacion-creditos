@@ -346,7 +346,7 @@ quarkus.smallrye-health.root-path=/q/health
 ## 8. Levantar en modo dev
 
 ```bash
-cd ms-notifications/infrastructure/entry-points/app
+cd backend/ms-notifications/infrastructure/entry-points/app
 mvn quarkus:dev
 ```
 
@@ -692,7 +692,7 @@ class NotificationConsumerIT {
 ### Ejecutar
 
 ```bash
-cd ms-notifications
+cd backend/ms-notifications
 
 # Unitarios (sin Docker)
 mvn test -pl infrastructure/driven-adapters/postgres

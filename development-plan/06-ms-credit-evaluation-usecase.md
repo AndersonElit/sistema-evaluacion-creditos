@@ -334,7 +334,7 @@ aws.secretAccessKey=${AWS_SECRET_ACCESS_KEY:test}
 
 ```bash
 # Con ms-risk corriendo (paso 03) y BD lista (paso 05):
-cd ms-credit-evaluation/infrastructure/entry-points/app
+cd backend/ms-credit-evaluation/infrastructure/entry-points/app
 mvn quarkus:dev
 
 # Test básico del caso de uso vía REST (aún sin JWT — se añade en paso 07)
@@ -532,7 +532,7 @@ class EvaluarCreditoUseCaseTest {
 ### Ejecutar
 
 ```bash
-cd ms-credit-evaluation
+cd backend/ms-credit-evaluation
 mvn test -pl application/use-cases
 # Resultado esperado: BUILD SUCCESS — 8+ tests en verde
 ```

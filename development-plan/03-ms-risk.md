@@ -283,7 +283,7 @@ quarkus.smallrye-health.root-path=/q/health
 ## 10. Levantar en modo dev
 
 ```bash
-cd ms-risk/infrastructure/entry-points/app
+cd backend/ms-risk/infrastructure/entry-points/app
 mvn quarkus:dev
 ```
 
@@ -469,7 +469,7 @@ class RiskResourceIT {
 ### Ejecutar tests
 
 ```bash
-cd ms-risk
+cd backend/ms-risk
 
 # Unitarios
 mvn test -pl infrastructure/driven-adapters/postgres

@@ -227,7 +227,7 @@ psql -h localhost -p 5432 -U postgres -d creditos_db \
   -f infrastructure/entry-points/app/src/main/resources/db/migration/V1__create_credit_evaluations.sql
 
 # 2. Levantar el servicio
-cd ms-credit-evaluation/infrastructure/entry-points/app
+cd backend/ms-credit-evaluation/infrastructure/entry-points/app
 mvn quarkus:dev
 ```
 
@@ -391,7 +391,7 @@ class CreditEvaluationRepositoryIT {
 ### Ejecutar
 
 ```bash
-cd ms-credit-evaluation
+cd backend/ms-credit-evaluation
 # Requiere Docker para DevServices (levanta PostgreSQL automáticamente)
 mvn test -pl infrastructure/driven-adapters/postgres
 ```

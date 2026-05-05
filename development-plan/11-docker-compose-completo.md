@@ -190,7 +190,7 @@ services:
 
   ms-risk:
     build:
-      context: ./ms-risk
+      context: ./backend/ms-risk
       dockerfile: Dockerfile
     container_name: ms-risk
     ports:
@@ -204,7 +204,7 @@ services:
 
   ms-credit-evaluation:
     build:
-      context: ./ms-credit-evaluation
+      context: ./backend/ms-credit-evaluation
       dockerfile: Dockerfile
     container_name: ms-credit-evaluation
     ports:
@@ -240,7 +240,7 @@ services:
 
   ms-notifications:
     build:
-      context: ./ms-notifications
+      context: ./backend/ms-notifications
       dockerfile: Dockerfile
     container_name: ms-notifications
     ports:
