@@ -311,24 +311,7 @@ curl -s http://localhost:8081/q/health | jq .status
 
 ### Dependencias de test — `ms-risk/pom.xml` (raíz)
 
-```xml
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-junit5</artifactId>
-    <scope>test</scope>
-</dependency>
-<dependency>
-    <groupId>io.rest-assured</groupId>
-    <artifactId>rest-assured</artifactId>
-    <scope>test</scope>
-</dependency>
-<dependency>
-    <groupId>org.assertj</groupId>
-    <artifactId>assertj-core</artifactId>
-    <version>3.25.3</version>
-    <scope>test</scope>
-</dependency>
-```
+> `quarkus-junit5`, `assertj-core` y `rest-assured` ya vienen en el root POM generado por el scaffold — no es necesario declararlos de nuevo.
 
 ### Pruebas Unitarias — `MockRiskAdapterTest.java`
 

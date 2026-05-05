@@ -14,16 +14,13 @@ que orquesta todo aplicando la regla de negocio.
 
 ## 1. Dependencias adicionales — `infrastructure/entry-points/app/pom.xml`
 
+> `quarkus-smallrye-jwt` ya lo genera el scaffold en el módulo `app`. Solo agregar:
+
 ```xml
 <!-- REST Client para ms-risk -->
 <dependency>
     <groupId>io.quarkus</groupId>
     <artifactId>quarkus-rest-client-reactive-jackson</artifactId>
-</dependency>
-<!-- JWT validation -->
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-smallrye-jwt</artifactId>
 </dependency>
 <!-- Fault Tolerance (Circuit Breaker, Timeout) -->
 <dependency>
@@ -350,38 +347,10 @@ curl -s -X POST http://localhost:8080/v1/credit-evaluations \
 
 ### Dependencias — `application/use-cases/pom.xml`
 
-```xml
-<dependency>
-    <groupId>org.junit.jupiter</groupId>
-    <artifactId>junit-jupiter</artifactId>
-    <version>5.10.2</version>
-    <scope>test</scope>
-</dependency>
-<dependency>
-    <groupId>org.mockito</groupId>
-    <artifactId>mockito-core</artifactId>
-    <version>5.11.0</version>
-    <scope>test</scope>
-</dependency>
-<dependency>
-    <groupId>org.mockito</groupId>
-    <artifactId>mockito-junit-jupiter</artifactId>
-    <version>5.11.0</version>
-    <scope>test</scope>
-</dependency>
-<dependency>
-    <groupId>org.assertj</groupId>
-    <artifactId>assertj-core</artifactId>
-    <version>3.25.3</version>
-    <scope>test</scope>
-</dependency>
-<!-- Mutiny para await() en tests -->
-<dependency>
-    <groupId>io.smallrye.reactive</groupId>
-    <artifactId>mutiny</artifactId>
-    <scope>test</scope>
-</dependency>
-```
+> `junit-jupiter`, `mockito-core`, `mockito-junit-jupiter` y `assertj-core` ya están en el root POM generado por el scaffold.
+> `mutiny` está en scope compile del módulo `application/use-cases` — el scope compile cubre los tests, no es necesario re-declararlo.
+>
+> No se requieren dependencias adicionales para este módulo.
 
 ### `EvaluarCreditoUseCaseTest.java`
 

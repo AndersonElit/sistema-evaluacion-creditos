@@ -301,7 +301,7 @@ echo "ms-risk:              http://localhost:8081/swagger-ui"
 - [ ] ms-risk caído → 503, no persiste evaluación
 
 ### Infraestructura
-- [ ] Flyway aplicó migraciones en `creditos_db` y `notifications_db`
+- [ ] Migraciones aplicadas manualmente en `creditos_db` y `notifications_db` (pasos 05 y 08)
 - [ ] Circuit Breaker activo en llamadas a ms-risk
 - [ ] DLQ disponible en LocalStack
 - [ ] Keycloak JWKS endpoint responde (`/realms/banco/protocol/openid-connect/certs`)

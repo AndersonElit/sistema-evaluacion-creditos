@@ -11,20 +11,9 @@ completa de `application.properties` (JWT/OIDC, CORS, Swagger).
 
 ## 1. Dependencias — `infrastructure/entry-points/rest-api/pom.xml`
 
-```xml
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-resteasy-reactive-jackson</artifactId>
-</dependency>
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-hibernate-validator</artifactId>
-</dependency>
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-smallrye-jwt</artifactId>
-</dependency>
-```
+> `quarkus-resteasy-reactive-jackson`, `quarkus-hibernate-validator` y `quarkus-smallrye-jwt` ya los genera el scaffold en los módulos `rest-api` y `app` respectivamente.
+>
+> No se requieren dependencias adicionales de producción en este módulo para este paso.
 
 ## 2. DTOs de Request/Response — `infrastructure/entry-points/rest-api`
 
@@ -242,8 +231,7 @@ quarkus.datasource.username=${DB_USERNAME:postgres}
 quarkus.datasource.password=${DB_PASSWORD:postgres}
 quarkus.datasource.jdbc.url=jdbc:postgresql://${DB_HOST:localhost}:5432/creditos_db
 quarkus.hibernate-orm.database.generation=validate
-quarkus.flyway.migrate-at-start=true
-quarkus.flyway.locations=classpath:db/migration
+# Migración aplicada manualmente antes de arrancar (ver Paso 05)
 
 # ── JWT/OIDC — Keycloak ──────────────────────────────────────
 mp.jwt.verify.publickey.location=http://localhost:9000/realms/banco/protocol/openid-connect/certs
@@ -368,7 +356,6 @@ curl -s -o /dev/null -w "%{http_code}" \
 # DevServices levanta PostgreSQL automáticamente
 quarkus.datasource.db-kind=postgresql
 quarkus.hibernate-orm.database.generation=drop-and-create
-quarkus.flyway.migrate-at-start=true
 
 # ms-risk apunta a WireMock en test
 quarkus.rest-client.risk-service.url=http://localhost:9090

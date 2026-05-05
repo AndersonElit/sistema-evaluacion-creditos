@@ -1,7 +1,7 @@
 # Paso 08 — ms-notifications: Consumer SQS, Persistencia e Email
 
 ## Objetivo
-Implementar `ms-notifications` completo: scaffold, migración Flyway de `notifications_db`,
+Implementar `ms-notifications` completo: scaffold, migración manual de `notifications_db`,
 consumer SQS con `@Scheduled`, idempotencia por `evaluacion_id`, y
 `EmailSenderService` usando AWS SES (LocalStack en dev).
 
@@ -16,9 +16,16 @@ consumer SQS con `@Scheduled`, idempotencia por `evaluacion_id`, y
 jbang scaffold/MavenHexagonalScaffold.java -n ms-notifications -m sqs-consumer
 ```
 
-## 2. Migración Flyway — `notifications_db`
+## 2. Migración manual — `notifications_db`
 
-Crear en `infrastructure/entry-points/app/src/main/resources/db/migration/`:
+Crear la carpeta y el archivo, luego aplicarlo **antes** de levantar el servicio:
+
+```bash
+mkdir -p infrastructure/entry-points/app/src/main/resources/db/migration
+
+psql -h localhost -p 5435 -U postgres -d notifications_db \
+  -f infrastructure/entry-points/app/src/main/resources/db/migration/V1__create_notifications.sql
+```
 
 ### `V1__create_notifications.sql`
 ```sql
@@ -315,10 +322,9 @@ quarkus.http.port=8083
 quarkus.datasource.db-kind=postgresql
 quarkus.datasource.username=${NOTIF_DB_USERNAME:postgres}
 quarkus.datasource.password=${NOTIF_DB_PASSWORD:postgres}
-quarkus.datasource.jdbc.url=jdbc:postgresql://${NOTIF_DB_HOST:localhost}:5434/notifications_db
+quarkus.datasource.jdbc.url=jdbc:postgresql://${NOTIF_DB_HOST:localhost}:5435/notifications_db
 quarkus.hibernate-orm.database.generation=validate
-quarkus.flyway.migrate-at-start=true
-quarkus.flyway.locations=classpath:db/migration
+# Migración aplicada manualmente antes de arrancar (ver sección 2)
 
 # ── AWS SQS ──────────────────────────────────────────────────
 quarkus.sqs.aws.region=${AWS_REGION:us-east-1}
@@ -383,30 +389,10 @@ psql -h localhost -p 5434 -U postgres -d notifications_db \
 
 ### Dependencias — `ms-notifications/pom.xml` (raíz)
 
+> `quarkus-junit5`, `mockito-core`, `mockito-junit-jupiter` y `assertj-core` ya están en el root POM generado por el scaffold.
+> Solo agregar la dependencia específica para el test de integración:
+
 ```xml
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-junit5</artifactId>
-    <scope>test</scope>
-</dependency>
-<dependency>
-    <groupId>org.mockito</groupId>
-    <artifactId>mockito-core</artifactId>
-    <version>5.11.0</version>
-    <scope>test</scope>
-</dependency>
-<dependency>
-    <groupId>org.mockito</groupId>
-    <artifactId>mockito-junit-jupiter</artifactId>
-    <version>5.11.0</version>
-    <scope>test</scope>
-</dependency>
-<dependency>
-    <groupId>org.assertj</groupId>
-    <artifactId>assertj-core</artifactId>
-    <version>3.25.3</version>
-    <scope>test</scope>
-</dependency>
 <!-- DevServices PostgreSQL para integration tests -->
 <dependency>
     <groupId>io.quarkus</groupId>
@@ -721,7 +707,7 @@ mvn test
 ---
 
 ## Estado esperado al finalizar
-- [ ] Flyway aplica `V1__create_notifications.sql` en `notifications_db`
+- [ ] `V1__create_notifications.sql` aplicado manualmente con psql antes de arrancar
 - [ ] `@Scheduled(every="20s")` consumer activo y visible en logs
 - [ ] Mensaje SQS de prueba procesado → estado `ENVIADO` en BD
 - [ ] Email "enviado" vía LocalStack SES (log de confirmación)

@@ -2,7 +2,7 @@
 
 ## Objetivo
 Implementar el adaptador de persistencia para `ms-credit-evaluation`:
-migración Flyway con el DDL de `creditos_db`, entidad JPA Panache y repositorio
+migración manual del DDL de `creditos_db` con psql, entidad JPA Panache y repositorio
 que implementa `EvaluacionCreditoRepository`.
 
 ## Prerrequisitos
@@ -11,7 +11,7 @@ que implementa `EvaluacionCreditoRepository`.
 
 ## 1. Dependencias — `infrastructure/driven-adapters/postgres/pom.xml`
 
-Agregar las dependencias necesarias (Flyway no vendrá por defecto del scaffold):
+El scaffold genera `quarkus-hibernate-reactive-panache` por defecto; este módulo usa JPA bloqueante, por lo que hay que reemplazar/agregar las deps manualmente:
 
 ```xml
 <dependency>
@@ -23,19 +23,22 @@ Agregar las dependencias necesarias (Flyway no vendrá por defecto del scaffold)
     <artifactId>quarkus-jdbc-postgresql</artifactId>
 </dependency>
 <dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-flyway</artifactId>
-</dependency>
-<dependency>
     <groupId>com.mscreditevaluation</groupId>
     <artifactId>domain-model</artifactId>
     <version>${project.version}</version>
 </dependency>
 ```
 
-## 2. Migración Flyway
+## 2. Migración manual — `creditos_db`
 
-Crear la carpeta de migraciones en el módulo `app` (donde Quarkus arranca):
+Aplicar el DDL directamente sobre la base de datos **antes** de levantar el servicio:
+
+```bash
+psql -h localhost -p 5432 -U postgres -d creditos_db \
+  -f infrastructure/entry-points/app/src/main/resources/db/migration/V1__create_credit_evaluations.sql
+```
+
+Crear la carpeta y el archivo de migración:
 
 ```
 infrastructure/entry-points/app/src/main/resources/db/migration/
@@ -208,35 +211,29 @@ quarkus.datasource.jdbc.url=jdbc:postgresql://${DB_HOST:localhost}:5432/creditos
 
 # ── Hibernate ORM ────────────────────────────────────────────
 quarkus.hibernate-orm.database.generation=validate
-
-# ── Flyway ──────────────────────────────────────────────────
-quarkus.flyway.migrate-at-start=true
-quarkus.flyway.locations=classpath:db/migration
 ```
 
-## 6. Levantar y verificar migración
+## 6. Aplicar migración y levantar
 
 ```bash
+# 1. Aplicar el DDL manualmente antes de arrancar el servicio
+psql -h localhost -p 5432 -U postgres -d creditos_db \
+  -f infrastructure/entry-points/app/src/main/resources/db/migration/V1__create_credit_evaluations.sql
+
+# 2. Levantar el servicio
 cd ms-credit-evaluation/infrastructure/entry-points/app
 mvn quarkus:dev
-# Flyway aplica V1__create_credit_evaluations.sql automáticamente al arrancar
 ```
 
 ## Verificación
 
 ```bash
-# Conectar a creditos_db y verificar tabla
+# Verificar tabla e índices
 psql -h localhost -p 5432 -U postgres -d creditos_db \
   -c "\d credit_evaluations"
 
-# Verificar índices
 psql -h localhost -p 5432 -U postgres -d creditos_db \
   -c "\di idx_credit_eval_*"
-
-# Flyway schema_history (migraciones aplicadas)
-psql -h localhost -p 5432 -U postgres -d creditos_db \
-  -c "SELECT version, description, success FROM flyway_schema_history;"
-# V1 | create credit_evaluations | t
 
 # Health del servicio
 curl -s http://localhost:8080/q/health | jq .status
@@ -251,18 +248,15 @@ curl -s http://localhost:8080/q/health | jq .status
 
 ### Dependencias adicionales — `infrastructure/driven-adapters/postgres/pom.xml`
 
+> `quarkus-junit5` ya está en el root POM generado por el scaffold. Solo agregar las dependencias específicas de test:
+
 ```xml
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-junit5</artifactId>
-    <scope>test</scope>
-</dependency>
 <dependency>
     <groupId>io.quarkus</groupId>
     <artifactId>quarkus-test-h2</artifactId>
     <scope>test</scope>
 </dependency>
-<!-- Alternativa con PostgreSQL real vía Testcontainers -->
+<!-- PostgreSQL real vía DevServices (levanta contenedor automáticamente) -->
 <dependency>
     <groupId>io.quarkus</groupId>
     <artifactId>quarkus-devservices-postgresql</artifactId>
@@ -277,9 +271,8 @@ Quarkus DevServices levanta PostgreSQL automáticamente cuando detecta el perfil
 ```properties
 # Quarkus DevServices levanta automáticamente un contenedor PostgreSQL para test
 quarkus.datasource.db-kind=postgresql
+# drop-and-create recrea el esquema desde las entidades JPA — no requiere migración manual en tests
 quarkus.hibernate-orm.database.generation=drop-and-create
-quarkus.flyway.migrate-at-start=true
-quarkus.flyway.locations=classpath:db/migration
 ```
 
 ### `CreditEvaluationRepositoryIT.java`
@@ -396,7 +389,7 @@ mvn test -pl infrastructure/driven-adapters/postgres
 ---
 
 ## Estado esperado al finalizar
-- [ ] Flyway aplica `V1__create_credit_evaluations.sql` al arrancar
+- [ ] `V1__create_credit_evaluations.sql` aplicado manualmente con psql antes de arrancar
 - [ ] Tabla `credit_evaluations` creada con todos los campos e índices
 - [ ] ENUM `estado_evaluacion` creado en PostgreSQL
 - [ ] `CreditEvaluationRepositoryAdapter` implementa `EvaluacionCreditoRepository`

@@ -9,8 +9,8 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
-@Command(name = "MavenHexagonalScaffold", mixinStandardHelpOptions = true, version = "2.0",
-        description = "Genera un proyecto base Quarkus Reactivo con Mutiny multimódulo.")
+@Command(name = "MavenHexagonalScaffold", mixinStandardHelpOptions = true, version = "2.1",
+        description = "Genera un proyecto base Quarkus multimódulo con arquitectura hexagonal.")
 public class MavenHexagonalScaffold implements Runnable {
 
     @Option(names = {"-n", "--service-name"},
@@ -189,6 +189,13 @@ bin/
         props.append("quarkus.http.auth.permission.authenticated.paths=/*\n");
         props.append("quarkus.http.auth.permission.authenticated.policy=authenticated\n\n");
 
+        props.append("# JWT\n");
+        props.append("quarkus.smallrye-jwt.role-paths=groups\n\n");
+
+        props.append("# Swagger UI (dev mode)\n");
+        props.append("quarkus.swagger-ui.always-include=true\n");
+        props.append("quarkus.swagger-ui.path=/swagger-ui\n\n");
+
         if ("sqs-producer".equalsIgnoreCase(messagingSystem) || "sqs-consumer".equalsIgnoreCase(messagingSystem)) {
             props.append("# AWS SQS\n");
             props.append("quarkus.sqs.aws.region=${AWS_REGION}\n");
@@ -335,6 +342,31 @@ bin/
             <artifactId>quarkus-junit5</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.rest-assured</groupId>
+            <artifactId>rest-assured</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -411,6 +443,10 @@ bin/
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-resteasy-reactive-jackson</artifactId>
         </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-hibernate-validator</artifactId>
+        </dependency>
 """);
         } else if (modulePath.equals("infrastructure/entry-points/app")) {
             sb.append(String.format("""
@@ -422,6 +458,10 @@ bin/
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-oidc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-smallrye-jwt</artifactId>
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
