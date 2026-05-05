@@ -164,101 +164,69 @@ Feature: Evaluación de Crédito
 
 ---
 
-## Feature: Autenticación y Gestión de Usuarios
+## Feature: Autenticación con Keycloak (OIDC)
 
 ```gherkin
-Feature: Autenticación y Login
+Feature: Autenticación via Keycloak OIDC
   Como usuario del sistema
-  Quiero poder iniciar sesión con mis credenciales
-  Para acceder a las funcionalidades según mi rol
+  Quiero iniciar sesión a través de Keycloak
+  Para obtener un JWT válido que me permita operar el sistema según mi rol
 
   # ──────────────────────────────────────────────
-  # LOGIN
+  # FLUJO OIDC
   # ──────────────────────────────────────────────
 
-  Scenario: Login exitoso con credenciales válidas
-    Given el usuario "analyst@banco.com" existe en el sistema
-    And la contraseña del usuario es "SecurePass123!"
-    And el usuario tiene rol "ANALYST"
-    When se envía POST "/v1/auth/login" con email "analyst@banco.com" y contraseña "SecurePass123!"
+  Scenario: Login exitoso — Keycloak emite JWT con rol correcto
+    Given el usuario "analyst@banco.com" existe en el realm "banco" de Keycloak
+    And el usuario tiene asignado el realm role "ANALYST"
+    When el Frontend completa el flujo Authorization Code + PKCE con Keycloak
+    Then Keycloak retorna un access_token JWT firmado con RS256
+    And el JWT contiene el claim "groups" con valor ["ANALYST"]
+    And el JWT tiene el claim "iss" igual a "http://localhost:9000/realms/banco"
+    And el access_token expira en menos de 360 segundos
+
+  Scenario: Keycloak bloquea cuenta tras múltiples intentos fallidos
+    Given el usuario "analyst@banco.com" existe en el realm "banco"
+    And Keycloak tiene Brute Force Detection activado con umbral de 5 intentos
+    When se realizan 5 intentos de login consecutivos con contraseña incorrecta
+    Then Keycloak bloquea la cuenta temporalmente
+    And cualquier intento adicional retorna error de cuenta bloqueada
+
+  Scenario: ms-credit-evaluation acepta JWT válido de Keycloak
+    Given el usuario "analyst@banco.com" obtuvo un JWT válido de Keycloak
+    When se envía GET "/v1/credit-evaluations" con el JWT en el header Authorization
     Then la respuesta tiene código HTTP 200
-    And la respuesta contiene un campo "accessToken" con un JWT válido
-    And el JWT contiene el claim "rol" con valor "ANALYST"
-    And el JWT tiene una expiración de 8 horas
 
-  Scenario: Login fallido con contraseña incorrecta
-    Given el usuario "analyst@banco.com" existe en el sistema
-    When se envía POST "/v1/auth/login" con email "analyst@banco.com" y contraseña "WrongPass"
-    Then la respuesta tiene código HTTP 401
-    And el campo "error" es "Credenciales inválidas"
-    And no se emite ningún token
-
-  Scenario: Login fallido con usuario inexistente
-    When se envía POST "/v1/auth/login" con email "noexiste@banco.com" y contraseña "cualquier"
-    Then la respuesta tiene código HTTP 401
-    And el campo "error" es "Credenciales inválidas"
-
-  Scenario: Acceso denegado a endpoint protegido sin token
-    When se envía GET "/v1/credit-evaluations" sin token de autorización
+  Scenario: Acceso denegado sin token de autorización
+    When se envía GET "/v1/credit-evaluations" sin header Authorization
     Then la respuesta tiene código HTTP 401
 
-  Scenario: Acceso denegado a endpoint protegido con token expirado
-    Given existe un token JWT expirado
+  Scenario: Acceso denegado con token expirado
+    Given existe un JWT cuyo campo "exp" es anterior al momento actual
     When se envía GET "/v1/credit-evaluations" con el token expirado
     Then la respuesta tiene código HTTP 401
-    And el campo "error" contiene "token expirado"
 
-  Scenario: Acceso denegado cuando el rol no tiene permisos
-    Given el usuario "viewer@banco.com" con rol "VIEWER" ha iniciado sesión
-    When se envía POST "/v1/credit-evaluations" con el token del VIEWER
-    Then la respuesta tiene código HTTP 403
-    And el campo "error" contiene "acceso denegado"
-
-  # ──────────────────────────────────────────────
-  # GESTIÓN DE USUARIOS
-  # ──────────────────────────────────────────────
-
-  Scenario: Admin crea un nuevo usuario ANALYST
-    Given el usuario "admin@banco.com" con rol "ADMIN" ha iniciado sesión
-    When se envía POST "/v1/auth/users" con:
-      """
-      {
-        "email": "nuevo@banco.com",
-        "password": "TempPass456!",
-        "nombreCompleto": "Juan Pérez",
-        "rol": "ANALYST"
-      }
-      """
-    Then la respuesta tiene código HTTP 201
-    And la respuesta contiene el campo "id" con un UUID
-    And el campo "email" es "nuevo@banco.com"
-    And el campo "rol" es "ANALYST"
-
-  Scenario: No-admin intenta crear un usuario y es rechazado
-    Given el usuario "analyst@banco.com" con rol "ANALYST" ha iniciado sesión
-    When se envía POST "/v1/auth/users" con datos de nuevo usuario
+  Scenario: Acceso denegado cuando el rol no tiene permisos suficientes
+    Given el usuario "viewer@banco.com" tiene JWT válido con rol "VIEWER"
+    When se envía POST "/v1/credit-evaluations" con el JWT del VIEWER
     Then la respuesta tiene código HTTP 403
 
-  Scenario: Admin actualiza el rol de un usuario
-    Given el usuario "admin@banco.com" con rol "ADMIN" ha iniciado sesión
-    And existe el usuario con id "user-uuid-123"
-    When se envía PUT "/v1/auth/users/user-uuid-123/roles" con rol "VIEWER"
-    Then la respuesta tiene código HTTP 200
-    And el campo "rol" es "VIEWER"
+  # ──────────────────────────────────────────────
+  # GESTIÓN DE USUARIOS (Keycloak Admin)
+  # ──────────────────────────────────────────────
 
-  Scenario: Admin lista todos los usuarios
-    Given el usuario "admin@banco.com" con rol "ADMIN" ha iniciado sesión
-    And existen 3 usuarios en el sistema
-    When se envía GET "/v1/auth/users"
-    Then la respuesta tiene código HTTP 200
-    And la respuesta contiene una lista con 3 usuarios
+  Scenario: Admin crea usuario ANALYST via Keycloak Admin REST API
+    Given el administrador autenticado en Keycloak Admin tiene permisos de realm-management
+    When se envía POST "/admin/realms/banco/users" con email "nuevo@banco.com" y rol "ANALYST"
+    Then Keycloak retorna HTTP 201
+    And el usuario existe en el realm "banco" con rol "ANALYST"
+    And el usuario puede iniciar sesión y obtener un JWT con claim "groups": ["ANALYST"]
 
-  Scenario: Registro con email duplicado falla
-    Given ya existe un usuario con email "analyst@banco.com"
-    And el usuario "admin@banco.com" con rol "ADMIN" ha iniciado sesión
-    When se envía POST "/v1/auth/users" con email "analyst@banco.com"
-    Then la respuesta tiene código HTTP 409
-    And el campo "error" contiene "email ya registrado"
+  Scenario: Desactivar usuario revoca acceso inmediatamente
+    Given el usuario "analyst@banco.com" tiene una sesión activa en Keycloak
+    When el administrador desactiva el usuario en Keycloak Admin Console
+    Then el refresh token del usuario deja de funcionar
+    And cualquier intento de renovar el access_token retorna error
 ```
 
 ---
@@ -339,4 +307,173 @@ Feature: Servicio de Riesgos Mock
     Given el servicio de riesgos está operativo
     When se hacen 10 llamadas GET "/v1/risk/score/1713175071"
     Then al menos 2 respuestas tienen valores de score diferentes
+```
+
+---
+
+## Feature: Seguridad — Control de Acceso y Protección de Datos
+
+> Escenarios ejecutables que verifican los controles de seguridad del sistema. Mapeados al Threat Model STRIDE de `10-sdd.md`. Deben ejecutarse en cada PR como parte del pipeline CI/CD.
+
+```gherkin
+Feature: Seguridad del Sistema de Evaluación de Créditos
+  Como equipo de desarrollo
+  Quiero que el sistema rechace activamente intentos de acceso no autorizado y entradas maliciosas
+  Para garantizar la confidencialidad, integridad y disponibilidad del sistema
+
+  # ──────────────────────────────────────────────────────────────
+  # SR-01: CONTROL DE ACCESO (AuthN / AuthZ)
+  # Cubre: STRIDE Spoofing, Elevation of Privilege | OWASP A01, A07
+  # ──────────────────────────────────────────────────────────────
+
+  Scenario Outline: Acceso rechazado sin token en cualquier endpoint protegido
+    When se envía <metodo> "<endpoint>" sin header Authorization
+    Then la respuesta tiene código HTTP 401
+    And la respuesta no contiene datos de negocio
+
+    Examples:
+      | metodo | endpoint                                                      |
+      | GET    | /v1/credit-evaluations                                        |
+      | POST   | /v1/credit-evaluations                                        |
+      | GET    | /v1/credit-evaluations/550e8400-e29b-41d4-a716-446655440001  |
+
+  Scenario: Token con firma manipulada es rechazado
+    Given existe un JWT válido emitido por Keycloak
+    And se modifica el payload del JWT para cambiar el rol a "ADMIN"
+    And se reensambla el token sin actualizar la firma RS256
+    When se envía POST "/v1/credit-evaluations" con el token manipulado
+    Then la respuesta tiene código HTTP 401
+    And el log de seguridad registra evento "JWT_SIGNATURE_INVALID"
+
+  Scenario: Token con algoritmo "none" es rechazado
+    Given se construye un JWT con header {"alg": "none"} y claims de rol "ADMIN"
+    When se envía POST "/v1/credit-evaluations" con ese token
+    Then la respuesta tiene código HTTP 401
+
+  Scenario: Token emitido por un issuer no confiable es rechazado
+    Given existe un JWT firmado por una clave RSA diferente a la de Keycloak realm "banco"
+    And el claim "iss" es "http://fake-issuer.com/realms/banco"
+    When se envía GET "/v1/credit-evaluations" con ese token
+    Then la respuesta tiene código HTTP 401
+
+  Scenario: VIEWER no puede crear evaluaciones (Elevation of Privilege)
+    Given el usuario "viewer@banco.com" tiene JWT válido de Keycloak con rol "VIEWER"
+    When se envía POST "/v1/credit-evaluations" con el JWT del VIEWER
+    Then la respuesta tiene código HTTP 403
+    And la evaluación no es persistida en la base de datos
+    And ms-risk no recibe ninguna llamada
+
+  Scenario: ANALYST no puede acceder a endpoints de Keycloak Admin
+    Given el usuario "analyst@banco.com" tiene JWT válido con rol "ANALYST"
+    When se envía GET "/admin/realms/banco/users" con el JWT del ANALYST
+    Then Keycloak retorna HTTP 403
+
+  # ──────────────────────────────────────────────────────────────
+  # SR-02: INTEGRIDAD DE ENTRADA — Injection y Validación
+  # Cubre: STRIDE Tampering | OWASP A03
+  # ──────────────────────────────────────────────────────────────
+
+  Scenario Outline: Intento de inyección SQL en campo cédula es rechazado
+    Given el usuario "analyst@banco.com" con rol "ANALYST" ha iniciado sesión
+    When se envía POST "/v1/credit-evaluations" con cédula "<payload_malicioso>"
+    Then la respuesta tiene código HTTP 422
+    And el campo "error" contiene "cédula inválida"
+    And no se realiza ninguna llamada al servicio de riesgos
+    And no se ejecuta ninguna sentencia SQL derivada del input
+
+    Examples:
+      | payload_malicioso             |
+      | 1' OR '1'='1                  |
+      | '; DROP TABLE credit_eval; -- |
+      | 1713175071' UNION SELECT 1--  |
+      | ${7*7}                        |
+      | <script>alert(1)</script>     |
+
+  Scenario Outline: Valores fuera de rango en campos numéricos son rechazados
+    Given el usuario "analyst@banco.com" con rol "ANALYST" ha iniciado sesión
+    When se envía POST "/v1/credit-evaluations" con <campo> igual a <valor>
+    Then la respuesta tiene código HTTP 422
+    And el campo "error" contiene descripción del campo inválido
+
+    Examples:
+      | campo           | valor       |
+      | montoSolicitado | -1          |
+      | montoSolicitado | 0           |
+      | salario         | -500        |
+      | salario         | 0           |
+      | plazoAnios      | 0           |
+      | plazoAnios      | 31          |
+      | plazoAnios      | 999999      |
+
+  Scenario: Payload JSON malformado retorna 400 sin exponer detalles internos
+    Given el usuario "analyst@banco.com" con rol "ANALYST" ha iniciado sesión
+    When se envía POST "/v1/credit-evaluations" con body "{ invalid json %%% }"
+    Then la respuesta tiene código HTTP 400
+    And la respuesta no contiene stack trace ni nombre de clase Java
+
+  Scenario: Campos extra en el request son ignorados silenciosamente
+    Given el usuario "analyst@banco.com" con rol "ANALYST" ha iniciado sesión
+    When se envía POST "/v1/credit-evaluations" con campos adicionales "adminOverride: true" y "bypassRules: true"
+    Then la respuesta procesa solo los campos del schema definido
+    And los campos adicionales no afectan el resultado de la evaluación
+
+  # ──────────────────────────────────────────────────────────────
+  # SR-04: RATE LIMITING
+  # Cubre: STRIDE Denial of Service | OWASP A04
+  # ──────────────────────────────────────────────────────────────
+
+  Scenario: Exceso de requests desde el mismo usuario retorna 429
+    Given el usuario "analyst@banco.com" con rol "ANALYST" ha iniciado sesión
+    When se envían 11 requests POST "/v1/credit-evaluations" en menos de 60 segundos desde el mismo usuario
+    Then la respuesta número 11 tiene código HTTP 429
+    And la respuesta contiene el header "Retry-After" con el tiempo de espera en segundos
+
+  # ──────────────────────────────────────────────────────────────
+  # SR-03 + OWASP A09: LOGGING SIN PII
+  # ──────────────────────────────────────────────────────────────
+
+  Scenario: La cédula del solicitante no aparece en plaintext en los logs
+    Given el usuario "analyst@banco.com" con rol "ANALYST" ha iniciado sesión
+    When se envía POST "/v1/credit-evaluations" con cédula "1713175071"
+    Then los logs generados por ms-credit-evaluation no contienen la cadena "1713175071" en plaintext
+    And los logs contienen la referencia enmascarada "17131****"
+
+  Scenario: El salario del solicitante no aparece en los logs
+    Given el usuario "analyst@banco.com" con rol "ANALYST" ha iniciado sesión
+    When se envía POST "/v1/credit-evaluations" con salario "5000.00"
+    Then los logs generados no contienen el valor "5000.00" en el campo salario
+
+  # ──────────────────────────────────────────────────────────────
+  # IDEMPOTENCIA COMO CONTROL DE SEGURIDAD (SQS)
+  # Cubre: STRIDE Tampering / Repudiation | OWASP A08
+  # ──────────────────────────────────────────────────────────────
+
+  Scenario: Mensaje SQS con evaluacionId ya procesado no genera segundo email
+    Given la evaluación "eval-001" fue procesada y la notificación está en estado "ENVIADO"
+    When el worker de ms-notifications recibe el mismo mensaje SQS para "eval-001"
+    Then no se envía un segundo email al solicitante
+    And el índice único en notifications.evaluacion_id garantiza la idempotencia
+    And el mensaje es eliminado de la cola sin error
+
+  Scenario: Mensaje SQS con schema inválido es rechazado sin procesar
+    Given existe un mensaje en la cola SQS con body malformado (sin campo "evaluacionId")
+    When el worker de ms-notifications intenta procesar el mensaje
+    Then el mensaje no genera envío de email
+    And el error queda registrado en el log de ms-notifications
+    And el mensaje es reencolado para reintento (no se elimina hasta maxReceiveCount)
+
+  # ──────────────────────────────────────────────────────────────
+  # OWASP A05: SECURITY MISCONFIGURATION — Cabeceras HTTP
+  # ──────────────────────────────────────────────────────────────
+
+  Scenario: Las respuestas de ms-credit-evaluation incluyen cabeceras de seguridad
+    When se envía cualquier request a ms-credit-evaluation
+    Then la respuesta contiene el header "X-Content-Type-Options" con valor "nosniff"
+    And la respuesta contiene el header "X-Frame-Options" con valor "DENY"
+    And la respuesta no expone el header "Server" con información de versión
+
+  Scenario: CORS rechaza requests desde orígenes no permitidos
+    When se envía una request con header "Origin: http://evil.com" a ms-credit-evaluation
+    Then la respuesta no contiene el header "Access-Control-Allow-Origin: http://evil.com"
+    And la respuesta tiene código HTTP 403
 ```

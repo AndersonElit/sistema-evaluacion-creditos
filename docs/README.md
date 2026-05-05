@@ -11,14 +11,15 @@ Mini-ecosistema de evaluación de créditos compuesto por un Frontend React, tre
 | # | Documento | Descripción |
 |---|-----------|-------------|
 | 01 | [DDD Estratégico](./01-ddd-estrategico.md) | Bounded Contexts, Context Map, Lenguaje Ubicuo, Eventos de Dominio |
-| 02 | [BDD — Escenarios](./02-bdd-scenarios.md) | Especificaciones en Gherkin para todas las funcionalidades |
+| 02 | [BDD — Escenarios](./02-bdd-scenarios.md) | Especificaciones en Gherkin para funcionalidades y seguridad |
 | 03 | [C4 — Contexto](./03-c4-context.md) | Diagrama de nivel de Sistema (C4 Level 1) |
 | 04 | [C4 — Contenedores](./04-c4-container.md) | Diagrama de nivel de Contenedores (C4 Level 2) |
 | 05 | [OpenAPI / Swagger](./05-openapi-swagger.md) | Especificación completa de todos los endpoints REST |
 | 06 | [Modelo de Base de Datos](./06-db-model.md) | Esquema PostgreSQL, DDL y diagrama ER |
-| 07 | [Autenticación y Login](./07-auth-login.md) | Diseño de Auth JWT, gestión de usuarios y roles |
+| 07 | [Autenticación y Login](./07-auth-login.md) | Keycloak OIDC/PKCE, configuración de Realm, integración Quarkus y Frontend |
 | 08 | [Notificaciones SQS](./08-notifications-sqs.md) | Flujo de notificaciones por email via AWS SQS/SES |
-| 09 | [ADR — Decisiones de Arquitectura](./09-adr.md) | REST vs gRPC, tech stack y otras decisiones clave |
+| 09 | [ADR — Decisiones de Arquitectura](./09-adr.md) | REST vs gRPC, Keycloak, ms-notifications y otras decisiones clave |
+| 10 | [SDD — Security-Driven Development](./10-sdd.md) | Threat Model STRIDE, controles, security requirements, testing y pipeline |
 
 ---
 
