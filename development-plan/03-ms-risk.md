@@ -57,10 +57,11 @@ public record Debt(UUID id, String description, BigDecimal monthlyPayment) {}
 package com.msrisk.model.port;
 
 import com.msrisk.model.entity.RiskProfile;
+import io.smallrye.mutiny.Uni;
 
 public interface RiskPort {
-    int getScore(String cedula);
-    RiskProfile getProfile(String cedula);
+    Uni<Integer> getScore(String cedula);
+    Uni<RiskProfile> getProfile(String cedula);
 }
 ```
 
@@ -72,6 +73,7 @@ package com.msrisk.usecases;
 
 import com.msrisk.model.entity.RiskProfile;
 import com.msrisk.model.port.RiskPort;
+import io.smallrye.mutiny.Uni;
 
 public class GetRiskProfileUseCase {
 
@@ -81,11 +83,11 @@ public class GetRiskProfileUseCase {
         this.riskPort = riskPort;
     }
 
-    public int getScore(String cedula) {
+    public Uni<Integer> getScore(String cedula) {
         return riskPort.getScore(cedula);
     }
 
-    public RiskProfile getProfile(String cedula) {
+    public Uni<RiskProfile> getProfile(String cedula) {
         return riskPort.getProfile(cedula);
     }
 }
@@ -103,46 +105,38 @@ package com.msrisk.postgres.repository;
 import com.msrisk.model.entity.Debt;
 import com.msrisk.model.entity.RiskProfile;
 import com.msrisk.model.port.RiskPort;
+import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
 @ApplicationScoped
 public class MockRiskAdapter implements RiskPort {
 
-    private static final Random RNG = new Random();
-
     @Override
-    public int getScore(String cedula) {
-        simulateLatency(2000);
-        return ThreadLocalRandom.current().nextInt(0, 101);
+    public Uni<Integer> getScore(String cedula) {
+        return Uni.createFrom().item(() -> ThreadLocalRandom.current().nextInt(0, 101))
+                .onItem().delayIt().by(Duration.ofMillis(2000));
     }
 
     @Override
-    public RiskProfile getProfile(String cedula) {
-        simulateLatency(1500);
-        int debtCount = ThreadLocalRandom.current().nextInt(0, 6);
-        List<Debt> debts = new ArrayList<>();
-        for (int i = 0; i < debtCount; i++) {
-            BigDecimal monthly = BigDecimal.valueOf(
-                    ThreadLocalRandom.current().nextDouble(50, 500));
-            debts.add(new Debt(UUID.randomUUID(), "Deuda " + (i + 1), monthly));
-        }
-        int score = ThreadLocalRandom.current().nextInt(0, 101);
-        return new RiskProfile(cedula, score, debts);
-    }
-
-    private void simulateLatency(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+    public Uni<RiskProfile> getProfile(String cedula) {
+        return Uni.createFrom().item(() -> {
+            int debtCount = ThreadLocalRandom.current().nextInt(0, 6);
+            List<Debt> debts = new ArrayList<>();
+            for (int i = 0; i < debtCount; i++) {
+                BigDecimal monthly = BigDecimal.valueOf(
+                        ThreadLocalRandom.current().nextDouble(50, 500));
+                debts.add(new Debt(UUID.randomUUID(), "Deuda " + (i + 1), monthly));
+            }
+            int score = ThreadLocalRandom.current().nextInt(0, 101);
+            return new RiskProfile(cedula, score, debts);
+        }).onItem().delayIt().by(Duration.ofMillis(1500));
     }
 }
 ```
@@ -190,6 +184,7 @@ import com.msrisk.model.port.RiskPort;
 import com.msrisk.restapi.dto.DebtDto;
 import com.msrisk.restapi.dto.DeudasResponse;
 import com.msrisk.restapi.dto.ScoreResponse;
+import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -206,30 +201,34 @@ public class RiskResource {
 
     @GET
     @Path("/score/{cedula}")
-    public Response getScore(@PathParam("cedula") String cedula) {
+    public Uni<Response> getScore(@PathParam("cedula") String cedula) {
         if (!cedula.matches("\\d{10}")) {
-            return Response.status(400)
+            return Uni.createFrom().item(
+                Response.status(400)
                     .entity("{\"error\":\"Formato de cédula inválido\"}")
-                    .build();
+                    .build());
         }
-        int score = riskPort.getScore(cedula);
-        return Response.ok(new ScoreResponse(cedula, score, Instant.now())).build();
+        return riskPort.getScore(cedula)
+                .map(score -> Response.ok(new ScoreResponse(cedula, score, Instant.now())).build());
     }
 
     @GET
     @Path("/debts/{cedula}")
-    public Response getDebts(@PathParam("cedula") String cedula) {
+    public Uni<Response> getDebts(@PathParam("cedula") String cedula) {
         if (!cedula.matches("\\d{10}")) {
-            return Response.status(400)
+            return Uni.createFrom().item(
+                Response.status(400)
                     .entity("{\"error\":\"Formato de cédula inválido\"}")
-                    .build();
+                    .build());
         }
-        var profile = riskPort.getProfile(cedula);
-        var dtos = profile.debts().stream()
-                .map(d -> new DebtDto(d.id(), d.description(), d.monthlyPayment()))
-                .toList();
-        return Response.ok(new DeudasResponse(
-                cedula, dtos, profile.totalMonthlyDebt(), Instant.now())).build();
+        return riskPort.getProfile(cedula)
+                .map(profile -> {
+                    var dtos = profile.debts().stream()
+                            .map(d -> new DebtDto(d.id(), d.description(), d.monthlyPayment()))
+                            .toList();
+                    return Response.ok(new DeudasResponse(
+                            cedula, dtos, profile.totalMonthlyDebt(), Instant.now())).build();
+                });
     }
 }
 ```
@@ -326,8 +325,11 @@ Ubicación: `infrastructure/driven-adapters/postgres/src/test/java/com/msrisk/po
 ```java
 package com.msrisk.postgres.repository;
 
+import io.smallrye.mutiny.helpers.test.UniAssertSubscriber;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -335,39 +337,43 @@ class MockRiskAdapterTest {
 
     private final MockRiskAdapter adapter = new MockRiskAdapter();
 
-    @RepeatedTest(20)
+    @RepeatedTest(5)
     void getScore_siempre_retorna_valor_entre_0_y_100() {
-        int score = adapter.getScore("1713175071");
+        Integer score = adapter.getScore("1713175071")
+                .await().atMost(Duration.ofSeconds(5));
         assertThat(score).isBetween(0, 100);
     }
 
     @Test
     void getProfile_retorna_cedula_correcta() {
-        var profile = adapter.getProfile("1713175071");
+        var profile = adapter.getProfile("1713175071")
+                .await().atMost(Duration.ofSeconds(5));
         assertThat(profile.cedula()).isEqualTo("1713175071");
     }
 
     @Test
     void getProfile_lista_de_deudas_no_es_nula() {
-        var profile = adapter.getProfile("1713175071");
+        var profile = adapter.getProfile("1713175071")
+                .await().atMost(Duration.ofSeconds(5));
         assertThat(profile.debts()).isNotNull();
     }
 
     @Test
     void getProfile_totalMonthlyDebt_es_suma_exacta_de_deudas_individuales() {
-        var profile = adapter.getProfile("1713175071");
+        var profile = adapter.getProfile("1713175071")
+                .await().atMost(Duration.ofSeconds(5));
         var sumaManual = profile.debts().stream()
                 .map(d -> d.monthlyPayment())
                 .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
         assertThat(profile.totalMonthlyDebt()).isEqualByComparingTo(sumaManual);
     }
 
-    @RepeatedTest(10)
-    void multiples_llamadas_producen_variabilidad_en_score() {
-        // El score es aleatorio: no debe ser siempre el mismo valor
-        // (este test verifica que el RNG funciona, no que sea verdaderamente aleatorio)
-        int score = adapter.getScore("0912345678");
-        assertThat(score).isBetween(0, 100);
+    @Test
+    void getScore_retorna_uni_no_nulo() {
+        UniAssertSubscriber<Integer> sub = adapter.getScore("0912345678")
+                .subscribe().withSubscriber(UniAssertSubscriber.create());
+        sub.awaitItem(Duration.ofSeconds(5));
+        assertThat(sub.getItem()).isBetween(0, 100);
     }
 }
 ```

@@ -149,8 +149,7 @@ public class CreditEvaluationResource {
     public Uni<Response> listar(
             @QueryParam("page") @DefaultValue("0") int page,
             @QueryParam("size") @DefaultValue("20") int size) {
-        return Uni.createFrom()
-                .item(() -> useCase.listarTodas(page, size))
+        return useCase.listarTodas(page, size)
                 .map(lista -> lista.stream()
                         .map(r -> EvaluacionCreditoResponse.from(r.evaluacion()))
                         .toList())

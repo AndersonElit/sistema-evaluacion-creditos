@@ -11,17 +11,20 @@ que implementa `EvaluacionCreditoRepository`.
 
 ## 1. Dependencias — `infrastructure/driven-adapters/postgres/pom.xml`
 
-El scaffold genera `quarkus-hibernate-reactive-panache` por defecto; este módulo usa JPA bloqueante, por lo que hay que reemplazar/agregar las deps manualmente:
+El scaffold ya genera las dependencias reactivas correctas — **no reemplazar** por JPA bloqueante.
+Solo agregar la dependencia al módulo de dominio:
 
 ```xml
+<!-- Generadas por el scaffold (mantener) -->
 <dependency>
     <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-hibernate-orm-panache</artifactId>
+    <artifactId>quarkus-hibernate-reactive-panache</artifactId>
 </dependency>
 <dependency>
     <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-jdbc-postgresql</artifactId>
+    <artifactId>quarkus-reactive-pg-client</artifactId>
 </dependency>
+<!-- Agregar manualmente -->
 <dependency>
     <groupId>com.mscreditevaluation</groupId>
     <artifactId>domain-model</artifactId>
@@ -69,16 +72,14 @@ CREATE INDEX idx_credit_eval_fecha   ON credit_evaluations (fecha_evaluacion DES
 CREATE INDEX idx_credit_eval_usuario ON credit_evaluations (evaluado_por_id);
 ```
 
-## 3. Entidad JPA — `infrastructure/driven-adapters/postgres`
+## 3. Entidad JPA Reactiva — `infrastructure/driven-adapters/postgres`
 
 ### `CreditEvaluationEntity.java`
 ```java
 package com.mscreditevaluation.postgres.entity;
 
-import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import io.quarkus.hibernate.reactive.panache.PanacheEntityBase;
 import jakarta.persistence.*;
-import org.hibernate.annotations.JdbcTypeCode;
-import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -124,7 +125,7 @@ public class CreditEvaluationEntity extends PanacheEntityBase {
 }
 ```
 
-## 4. Repositorio — `infrastructure/driven-adapters/postgres`
+## 4. Repositorio Reactivo — `infrastructure/driven-adapters/postgres`
 
 ### `CreditEvaluationRepositoryAdapter.java`
 ```java
@@ -137,8 +138,9 @@ import com.mscreditevaluation.model.valueobject.Cedula;
 import com.mscreditevaluation.model.valueobject.Dinero;
 import com.mscreditevaluation.model.valueobject.ScoreRiesgo;
 import com.mscreditevaluation.postgres.entity.CreditEvaluationEntity;
+import io.quarkus.hibernate.reactive.panache.common.ReactiveTransactional;
+import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.transaction.Transactional;
 
 import java.util.List;
 import java.util.Optional;
@@ -148,27 +150,25 @@ import java.util.UUID;
 public class CreditEvaluationRepositoryAdapter implements EvaluacionCreditoRepository {
 
     @Override
-    @Transactional
-    public EvaluacionCredito guardar(EvaluacionCredito evaluacion) {
+    @ReactiveTransactional
+    public Uni<EvaluacionCredito> guardar(EvaluacionCredito evaluacion) {
         CreditEvaluationEntity entity = toEntity(evaluacion);
-        CreditEvaluationEntity.persist(entity);
-        return evaluacion;
+        return entity.<CreditEvaluationEntity>persistAndFlush()
+                .map(e -> evaluacion);
     }
 
     @Override
-    public Optional<EvaluacionCredito> buscarPorId(UUID id) {
-        return CreditEvaluationEntity.<CreditEvaluationEntity>findByIdOptional(id)
-                .map(this::toDomain);
+    public Uni<Optional<EvaluacionCredito>> buscarPorId(UUID id) {
+        return CreditEvaluationEntity.<CreditEvaluationEntity>findById(id)
+                .map(e -> Optional.ofNullable(e).map(this::toDomain));
     }
 
     @Override
-    public List<EvaluacionCredito> listarTodas(int page, int size) {
+    public Uni<List<EvaluacionCredito>> listarTodas(int page, int size) {
         return CreditEvaluationEntity.<CreditEvaluationEntity>findAll()
                 .page(page, size)
                 .list()
-                .stream()
-                .map(this::toDomain)
-                .toList();
+                .map(list -> list.stream().map(this::toDomain).toList());
     }
 
     private CreditEvaluationEntity toEntity(EvaluacionCredito d) {
@@ -209,13 +209,13 @@ En `infrastructure/entry-points/app/src/main/resources/application.properties`:
 ```properties
 quarkus.http.port=8080
 
-# ── DataSource — creditos_db ──────────────────────────────────
+# ── DataSource Reactivo — creditos_db ────────────────────────
 quarkus.datasource.db-kind=postgresql
 quarkus.datasource.username=${DB_USERNAME:postgres}
 quarkus.datasource.password=${DB_PASSWORD:postgres}
-quarkus.datasource.jdbc.url=jdbc:postgresql://${DB_HOST:localhost}:5432/creditos_db
+quarkus.datasource.reactive.url=postgresql://${DB_HOST:localhost}:5432/creditos_db
 
-# ── Hibernate ORM ────────────────────────────────────────────
+# ── Hibernate Reactive ───────────────────────────────────────
 quarkus.hibernate-orm.database.generation=validate
 ```
 
@@ -254,30 +254,29 @@ curl -s http://localhost:8080/q/health | jq .status
 
 ### Dependencias adicionales — `infrastructure/driven-adapters/postgres/pom.xml`
 
-> `quarkus-junit5` ya está en el root POM generado por el scaffold. Solo agregar las dependencias específicas de test:
+> `quarkus-junit5` ya está en el root POM generado por el scaffold. Solo agregar:
 
 ```xml
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-test-h2</artifactId>
-    <scope>test</scope>
-</dependency>
 <!-- PostgreSQL real vía DevServices (levanta contenedor automáticamente) -->
 <dependency>
     <groupId>io.quarkus</groupId>
     <artifactId>quarkus-devservices-postgresql</artifactId>
     <scope>test</scope>
 </dependency>
+<!-- Soporte para tests reactivos en Vert.x -->
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-test-vertx</artifactId>
+    <scope>test</scope>
+</dependency>
 ```
 
 ### `application.properties` de test — `src/test/resources/application.properties`
 
-Quarkus DevServices levanta PostgreSQL automáticamente cuando detecta el perfil `test`:
-
 ```properties
 # Quarkus DevServices levanta automáticamente un contenedor PostgreSQL para test
 quarkus.datasource.db-kind=postgresql
-# drop-and-create recrea el esquema desde las entidades JPA — no requiere migración manual en tests
+# drop-and-create recrea el esquema desde las entidades — no requiere migración manual en tests
 quarkus.hibernate-orm.database.generation=drop-and-create
 ```
 
@@ -294,8 +293,10 @@ import com.mscreditevaluation.model.valueobject.Cedula;
 import com.mscreditevaluation.model.valueobject.Dinero;
 import com.mscreditevaluation.model.valueobject.ScoreRiesgo;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.vertx.RunOnVertxContext;
+import io.quarkus.test.vertx.TestReactiveTransaction;
+import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import jakarta.transaction.Transactional;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -304,6 +305,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.*;
 
 @QuarkusTest
+@RunOnVertxContext
 class CreditEvaluationRepositoryIT {
 
     @Inject
@@ -323,51 +325,53 @@ class CreditEvaluationRepositoryIT {
     }
 
     @Test
-    @Transactional
-    void guardar_persiste_y_asigna_id() {
+    @TestReactiveTransaction
+    Uni<Void> guardar_persiste_y_asigna_id() {
+        return repository.guardar(evaluacionValida())
+                .invoke(guardada -> {
+                    assertThat(guardada.getId()).isNotNull();
+                    assertThat(guardada.getCedula().valor()).isEqualTo("1713175071");
+                    assertThat(guardada.getEstadoFinal()).isEqualTo(EstadoEvaluacion.APROBADO);
+                }).replaceWithVoid();
+    }
+
+    @Test
+    @TestReactiveTransaction
+    Uni<Void> buscarPorId_retorna_evaluacion_persistida() {
         var evaluacion = evaluacionValida();
-        var guardada = repository.guardar(evaluacion);
-
-        assertThat(guardada.getId()).isNotNull();
-        assertThat(guardada.getCedula().valor()).isEqualTo("1713175071");
-        assertThat(guardada.getEstadoFinal()).isEqualTo(EstadoEvaluacion.APROBADO);
+        return repository.guardar(evaluacion)
+                .chain(e -> repository.buscarPorId(e.getId()))
+                .invoke(encontrada -> {
+                    assertThat(encontrada).isPresent();
+                    assertThat(encontrada.get().getCedula().valor()).isEqualTo("1713175071");
+                    assertThat(encontrada.get().getScoreRiesgo().valor()).isEqualTo(85);
+                }).replaceWithVoid();
     }
 
     @Test
-    @Transactional
-    void buscarPorId_retorna_evaluacion_persistida() {
-        var evaluacion = evaluacionValida();
-        repository.guardar(evaluacion);
-
-        var encontrada = repository.buscarPorId(evaluacion.getId());
-
-        assertThat(encontrada).isPresent();
-        assertThat(encontrada.get().getCedula().valor()).isEqualTo("1713175071");
-        assertThat(encontrada.get().getScoreRiesgo().valor()).isEqualTo(85);
+    @TestReactiveTransaction
+    Uni<Void> buscarPorId_retorna_empty_para_id_inexistente() {
+        return repository.buscarPorId(UUID.randomUUID())
+                .invoke(resultado -> assertThat(resultado).isEmpty())
+                .replaceWithVoid();
     }
 
     @Test
-    @Transactional
-    void buscarPorId_retorna_empty_para_id_inexistente() {
-        var resultado = repository.buscarPorId(UUID.randomUUID());
-        assertThat(resultado).isEmpty();
+    @TestReactiveTransaction
+    Uni<Void> listarTodas_retorna_evaluaciones_paginadas() {
+        return Uni.combine().all().unis(
+                repository.guardar(evaluacionValida()),
+                repository.guardar(evaluacionValida()),
+                repository.guardar(evaluacionValida()))
+            .discardItems()
+            .chain(() -> repository.listarTodas(0, 10))
+            .invoke(lista -> assertThat(lista).hasSizeGreaterThanOrEqualTo(3))
+            .replaceWithVoid();
     }
 
     @Test
-    @Transactional
-    void listarTodas_retorna_evaluaciones_paginadas() {
-        // Guardar 3 evaluaciones
-        for (int i = 0; i < 3; i++) {
-            repository.guardar(evaluacionValida());
-        }
-
-        var lista = repository.listarTodas(0, 10);
-        assertThat(lista).hasSizeGreaterThanOrEqualTo(3);
-    }
-
-    @Test
-    @Transactional
-    void evaluacion_rechazada_se_persiste_con_estado_correcto() {
+    @TestReactiveTransaction
+    Uni<Void> evaluacion_rechazada_se_persiste_con_estado_correcto() {
         var evaluacion = EvaluacionCredito.builder()
                 .cedula(new Cedula("1713175071"))
                 .montoSolicitado(Dinero.usd(new BigDecimal("10000.00")))
@@ -379,11 +383,12 @@ class CreditEvaluationRepositoryIT {
                 .evaluadoPorId(UUID.randomUUID())
                 .build();
 
-        repository.guardar(evaluacion);
-        var encontrada = repository.buscarPorId(evaluacion.getId());
-
-        assertThat(encontrada).isPresent();
-        assertThat(encontrada.get().getEstadoFinal()).isEqualTo(EstadoEvaluacion.RECHAZADO);
+        return repository.guardar(evaluacion)
+                .chain(e -> repository.buscarPorId(e.getId()))
+                .invoke(encontrada -> {
+                    assertThat(encontrada).isPresent();
+                    assertThat(encontrada.get().getEstadoFinal()).isEqualTo(EstadoEvaluacion.RECHAZADO);
+                }).replaceWithVoid();
     }
 }
 ```

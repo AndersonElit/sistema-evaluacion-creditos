@@ -222,14 +222,15 @@ public class EvaluacionCredito {
 package com.mscreditevaluation.model.port;
 
 import com.mscreditevaluation.model.entity.EvaluacionCredito;
+import io.smallrye.mutiny.Uni;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 public interface EvaluacionCreditoRepository {
-    EvaluacionCredito guardar(EvaluacionCredito evaluacion);
-    Optional<EvaluacionCredito> buscarPorId(UUID id);
-    List<EvaluacionCredito> listarTodas(int page, int size);
+    Uni<EvaluacionCredito> guardar(EvaluacionCredito evaluacion);
+    Uni<Optional<EvaluacionCredito>> buscarPorId(UUID id);
+    Uni<List<EvaluacionCredito>> listarTodas(int page, int size);
 }
 ```
 
@@ -237,12 +238,12 @@ public interface EvaluacionCreditoRepository {
 ```java
 package com.mscreditevaluation.model.port;
 
+import io.smallrye.mutiny.Uni;
 import java.math.BigDecimal;
-import java.util.List;
 
 public interface RiskServicePort {
     record RiskData(int score, BigDecimal totalDeudaMensual) {}
-    RiskData consultarRiesgo(String cedula);  // llamadas paralelas internas
+    Uni<RiskData> consultarRiesgo(String cedula);  // llamadas paralelas con Mutiny
 }
 ```
 
@@ -251,9 +252,10 @@ public interface RiskServicePort {
 package com.mscreditevaluation.model.port;
 
 import com.mscreditevaluation.model.entity.EvaluacionCredito;
+import io.smallrye.mutiny.Uni;
 
 public interface NotificationPort {
-    void publicarEvaluacionCompletada(EvaluacionCredito evaluacion, String destinatarioEmail);
+    Uni<Void> publicarEvaluacionCompletada(EvaluacionCredito evaluacion, String destinatarioEmail);
 }
 ```
 

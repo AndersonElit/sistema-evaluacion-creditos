@@ -75,7 +75,8 @@ import com.mscreditevaluation.usecases.command.SolicitudCreditoCommand;
 import com.mscreditevaluation.usecases.exception.EvaluacionNotFoundException;
 import com.mscreditevaluation.usecases.result.EvaluacionCreditoResult;
 import io.smallrye.mutiny.Uni;
-import io.smallrye.mutiny.infrastructure.Infrastructure;
+
+import java.util.UUID;
 
 public class EvaluarCreditoUseCase {
 
@@ -94,13 +95,11 @@ public class EvaluarCreditoUseCase {
     public Uni<EvaluacionCreditoResult> ejecutar(SolicitudCreditoCommand cmd) {
         Cedula cedula = new Cedula(cmd.cedula());  // lanza excepción si inválida
 
-        return Uni.createFrom()
-                .item(() -> riskService.consultarRiesgo(cmd.cedula()))
-                .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
-                .map(riskData -> {
-                    var score = new ScoreRiesgo(riskData.score());
-                    var deuda = Dinero.usd(riskData.totalDeudaMensual());
-                    var monto = Dinero.usd(cmd.montoSolicitado());
+        return riskService.consultarRiesgo(cmd.cedula())
+                .flatMap(riskData -> {
+                    var score   = new ScoreRiesgo(riskData.score());
+                    var deuda   = Dinero.usd(riskData.totalDeudaMensual());
+                    var monto   = Dinero.usd(cmd.montoSolicitado());
                     var salario = Dinero.usd(cmd.salario());
 
                     EstadoEvaluacion estado = EvaluacionCredito.evaluar(
@@ -117,22 +116,26 @@ public class EvaluarCreditoUseCase {
                             .evaluadoPorId(cmd.evaluadoPorId())
                             .build();
 
-                    EvaluacionCredito persistida = repository.guardar(evaluacion);
-
-                    // Fire-and-forget: no bloquea la respuesta al cliente
-                    notificationPort.publicarEvaluacionCompletada(
-                            persistida, cmd.destinatarioEmail());
-
-                    return new EvaluacionCreditoResult(persistida);
+                    return repository.guardar(evaluacion)
+                            .flatMap(persistida ->
+                                notificationPort.publicarEvaluacionCompletada(
+                                        persistida, cmd.destinatarioEmail())
+                                    .onFailure().recoverWithNull()  // fire-and-forget: no bloquea
+                                    .map(v -> new EvaluacionCreditoResult(persistida))
+                            );
                 });
     }
 
-    public Uni<EvaluacionCreditoResult> buscarPorId(java.util.UUID id) {
-        return Uni.createFrom().item(() ->
-                repository.buscarPorId(id)
+    public Uni<EvaluacionCreditoResult> buscarPorId(UUID id) {
+        return repository.buscarPorId(id)
+                .map(opt -> opt
                         .map(EvaluacionCreditoResult::new)
-                        .orElseThrow(() -> new EvaluacionNotFoundException(id))
-        ).runSubscriptionOn(Infrastructure.getDefaultWorkerPool());
+                        .orElseThrow(() -> new EvaluacionNotFoundException(id)));
+    }
+
+    public Uni<java.util.List<EvaluacionCreditoResult>> listarTodas(int page, int size) {
+        return repository.listarTodas(page, size)
+                .map(list -> list.stream().map(EvaluacionCreditoResult::new).toList());
     }
 }
 ```
@@ -152,10 +155,11 @@ public class EvaluacionNotFoundException extends RuntimeException {
 
 ## 4. REST Client para ms-risk — `infrastructure/driven-adapters/postgres` (o nuevo módulo)
 
-### `RiskServiceClient.java` (interface MicroProfile)
+### `RiskServiceClient.java` (interface MicroProfile Reactive)
 ```java
 package com.mscreditevaluation.postgres.repository;
 
+import io.smallrye.mutiny.Uni;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
@@ -184,28 +188,26 @@ public interface RiskServiceClient {
     @Path("/score/{cedula}")
     @Timeout(value = 5, unit = ChronoUnit.SECONDS)
     @CircuitBreaker(requestVolumeThreshold = 4, failureRatio = 0.5, delay = 10000)
-    ScoreResponse getScore(@PathParam("cedula") String cedula);
+    Uni<ScoreResponse> getScore(@PathParam("cedula") String cedula);
 
     @GET
     @Path("/debts/{cedula}")
     @Timeout(value = 5, unit = ChronoUnit.SECONDS)
     @CircuitBreaker(requestVolumeThreshold = 4, failureRatio = 0.5, delay = 10000)
-    DeudasResponse getDebts(@PathParam("cedula") String cedula);
+    Uni<DeudasResponse> getDebts(@PathParam("cedula") String cedula);
 }
 ```
 
-### `RiskServiceAdapter.java` — Implementa `RiskServicePort` con llamadas paralelas
+### `RiskServiceAdapter.java` — Implementa `RiskServicePort` con llamadas paralelas via Mutiny
 ```java
 package com.mscreditevaluation.postgres.repository;
 
 import com.mscreditevaluation.model.port.RiskServicePort;
 import io.smallrye.mutiny.Uni;
-import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.enterprise.context.ApplicationScoped;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
 import java.math.BigDecimal;
-import java.util.concurrent.CompletableFuture;
 
 @ApplicationScoped
 public class RiskServiceAdapter implements RiskServicePort {
@@ -214,26 +216,21 @@ public class RiskServiceAdapter implements RiskServicePort {
     RiskServiceClient riskClient;
 
     @Override
-    public RiskData consultarRiesgo(String cedula) {
+    public Uni<RiskData> consultarRiesgo(String cedula) {
         // Llamadas paralelas: score (~2s) + deudas (~1.5s) = ~2s total (no 3.5s)
-        CompletableFuture<RiskServiceClient.ScoreResponse> scoreFuture =
-                CompletableFuture.supplyAsync(() -> riskClient.getScore(cedula),
-                        Infrastructure.getDefaultWorkerPool());
-
-        CompletableFuture<RiskServiceClient.DeudasResponse> debtsFuture =
-                CompletableFuture.supplyAsync(() -> riskClient.getDebts(cedula),
-                        Infrastructure.getDefaultWorkerPool());
-
-        try {
-            CompletableFuture.allOf(scoreFuture, debtsFuture).join();
-            int score = scoreFuture.get().score();
-            BigDecimal deudaTotal = debtsFuture.get().totalMensual() != null
-                    ? debtsFuture.get().totalMensual()
-                    : BigDecimal.ZERO;
-            return new RiskData(score, deudaTotal);
-        } catch (Exception e) {
-            throw new RiskServiceUnavailableException("No se pudo consultar el servicio de riesgos", e);
-        }
+        return Uni.combine().all()
+                .unis(riskClient.getScore(cedula), riskClient.getDebts(cedula))
+                .asTuple()
+                .map(tuple -> {
+                    int score = tuple.getItem1().score();
+                    BigDecimal deudaTotal = tuple.getItem2().totalMensual() != null
+                            ? tuple.getItem2().totalMensual()
+                            : BigDecimal.ZERO;
+                    return new RiskData(score, deudaTotal);
+                })
+                .onFailure().transform(e ->
+                        new RiskServiceUnavailableException(
+                                "No se pudo consultar el servicio de riesgos", e));
     }
 }
 ```
@@ -258,15 +255,15 @@ package com.mscreditevaluation.sqsproducer.adapter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mscreditevaluation.model.entity.EvaluacionCredito;
 import com.mscreditevaluation.model.port.NotificationPort;
+import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 
-import java.time.Instant;
 import java.util.Map;
 
 @ApplicationScoped
@@ -274,42 +271,42 @@ public class SqsNotificationPublisher implements NotificationPort {
 
     private static final Logger log = LoggerFactory.getLogger(SqsNotificationPublisher.class);
 
-    @Inject SqsClient sqsClient;
+    @Inject SqsAsyncClient sqsClient;
     @Inject ObjectMapper objectMapper;
 
     @ConfigProperty(name = "sqs.queue.url")
     String queueUrl;
 
     @Override
-    public void publicarEvaluacionCompletada(EvaluacionCredito evaluacion,
-                                              String destinatarioEmail) {
+    public Uni<Void> publicarEvaluacionCompletada(EvaluacionCredito evaluacion,
+                                                   String destinatarioEmail) {
         try {
             Map<String, Object> evento = Map.of(
-                "evaluacionId",     evaluacion.getId().toString(),
-                "cedula",           evaluacion.getCedula().valor(),
+                "evaluacionId",      evaluacion.getId().toString(),
+                "cedula",            evaluacion.getCedula().valor(),
                 "destinatarioEmail", destinatarioEmail,
-                "estadoFinal",      evaluacion.getEstadoFinal().name(),
-                "montoSolicitado",  evaluacion.getMontoSolicitado().cantidad(),
-                "moneda",           "USD",
-                "plazoAnios",       evaluacion.getPlazoAnios(),
-                "fechaEvaluacion",  evaluacion.getFechaEvaluacion().toString(),
-                "version",          "1.0"
+                "estadoFinal",       evaluacion.getEstadoFinal().name(),
+                "montoSolicitado",   evaluacion.getMontoSolicitado().cantidad(),
+                "moneda",            "USD",
+                "plazoAnios",        evaluacion.getPlazoAnios(),
+                "fechaEvaluacion",   evaluacion.getFechaEvaluacion().toString(),
+                "version",           "1.0"
             );
-
             String body = objectMapper.writeValueAsString(evento);
 
-            var response = sqsClient.sendMessage(SendMessageRequest.builder()
-                    .queueUrl(queueUrl)
-                    .messageBody(body)
-                    .build());
-
-            log.info("Evento publicado en SQS: evaluacionId={}, messageId={}",
-                    evaluacion.getId(), response.messageId());
-
+            return Uni.createFrom().completionStage(() ->
+                    sqsClient.sendMessage(SendMessageRequest.builder()
+                            .queueUrl(queueUrl)
+                            .messageBody(body)
+                            .build()))
+                    .invoke(r -> log.info("Evento publicado en SQS: evaluacionId={}, messageId={}",
+                            evaluacion.getId(), r.messageId()))
+                    .replaceWithVoid()
+                    .onFailure().invoke(e -> log.error("Error publicando en SQS para evaluacion {}: {}",
+                            evaluacion.getId(), e.getMessage()));
         } catch (Exception e) {
-            // No falla la evaluación si SQS no está disponible
-            log.error("Error publicando en SQS para evaluacion {}: {}",
-                    evaluacion.getId(), e.getMessage());
+            log.error("Error serializando evento SQS: {}", e.getMessage());
+            return Uni.createFrom().voidItem();
         }
     }
 }
@@ -407,8 +404,11 @@ class EvaluarCreditoUseCaseTest {
     @BeforeEach
     void setUp() {
         useCase = new EvaluarCreditoUseCase(repository, riskService, notificationPort);
-        // repositorio retorna lo que recibe (simula persist)
-        when(repository.guardar(any())).thenAnswer(inv -> inv.getArgument(0));
+        // repositorio retorna lo que recibe (simula persist reactivo)
+        when(repository.guardar(any())).thenAnswer(inv ->
+                Uni.createFrom().item(inv.getArgument(0)));
+        when(notificationPort.publicarEvaluacionCompletada(any(), any()))
+                .thenReturn(Uni.createFrom().voidItem());
     }
 
     // ── Happy path ────────────────────────────────────────────
@@ -416,7 +416,8 @@ class EvaluarCreditoUseCaseTest {
     @Test
     void ejecutar_aprobado_con_score_alto() {
         when(riskService.consultarRiesgo("1713175071"))
-                .thenReturn(new RiskServicePort.RiskData(85, new BigDecimal("200.00")));
+                .thenReturn(Uni.createFrom().item(
+                        new RiskServicePort.RiskData(85, new BigDecimal("200.00"))));
 
         var result = useCase.ejecutar(CMD).await().indefinitely();
 
@@ -427,7 +428,8 @@ class EvaluarCreditoUseCaseTest {
     @Test
     void ejecutar_rechazado_con_score_70() {
         when(riskService.consultarRiesgo(anyString()))
-                .thenReturn(new RiskServicePort.RiskData(70, new BigDecimal("50.00")));
+                .thenReturn(Uni.createFrom().item(
+                        new RiskServicePort.RiskData(70, new BigDecimal("50.00"))));
 
         var result = useCase.ejecutar(CMD).await().indefinitely();
 
@@ -439,7 +441,8 @@ class EvaluarCreditoUseCaseTest {
     @Test
     void ejecutar_llama_a_repositorio_exactamente_una_vez() {
         when(riskService.consultarRiesgo(anyString()))
-                .thenReturn(new RiskServicePort.RiskData(80, BigDecimal.ONE));
+                .thenReturn(Uni.createFrom().item(
+                        new RiskServicePort.RiskData(80, BigDecimal.ONE)));
 
         useCase.ejecutar(CMD).await().indefinitely();
 
@@ -449,7 +452,8 @@ class EvaluarCreditoUseCaseTest {
     @Test
     void ejecutar_publica_notificacion_con_email_del_comando() {
         when(riskService.consultarRiesgo(anyString()))
-                .thenReturn(new RiskServicePort.RiskData(80, BigDecimal.ONE));
+                .thenReturn(Uni.createFrom().item(
+                        new RiskServicePort.RiskData(80, BigDecimal.ONE)));
 
         useCase.ejecutar(CMD).await().indefinitely();
 
@@ -460,7 +464,8 @@ class EvaluarCreditoUseCaseTest {
     @Test
     void ejecutar_guarda_evaluadoPorId_del_comando() {
         when(riskService.consultarRiesgo(anyString()))
-                .thenReturn(new RiskServicePort.RiskData(80, BigDecimal.ONE));
+                .thenReturn(Uni.createFrom().item(
+                        new RiskServicePort.RiskData(80, BigDecimal.ONE)));
 
         useCase.ejecutar(CMD).await().indefinitely();
 
@@ -488,7 +493,8 @@ class EvaluarCreditoUseCaseTest {
     @Test
     void ejecutar_no_persiste_cuando_risk_service_falla() {
         when(riskService.consultarRiesgo(anyString()))
-                .thenThrow(new RuntimeException("ms-risk timeout"));
+                .thenReturn(Uni.createFrom().failure(
+                        new RuntimeException("ms-risk timeout")));
 
         assertThatException()
                 .isThrownBy(() -> useCase.ejecutar(CMD).await().indefinitely());
@@ -502,11 +508,12 @@ class EvaluarCreditoUseCaseTest {
     @Test
     void fallo_en_notificacion_no_impide_respuesta_al_cliente() {
         when(riskService.consultarRiesgo(anyString()))
-                .thenReturn(new RiskServicePort.RiskData(85, new BigDecimal("100")));
-        doThrow(new RuntimeException("SQS no disponible"))
-                .when(notificationPort).publicarEvaluacionCompletada(any(), any());
+                .thenReturn(Uni.createFrom().item(
+                        new RiskServicePort.RiskData(85, new BigDecimal("100"))));
+        when(notificationPort.publicarEvaluacionCompletada(any(), any()))
+                .thenReturn(Uni.createFrom().failure(new RuntimeException("SQS no disponible")));
 
-        // La evaluación debe completarse aunque SQS falle
+        // La evaluación debe completarse aunque SQS falle (onFailure().recoverWithNull())
         assertThatNoException()
                 .isThrownBy(() -> useCase.ejecutar(CMD).await().indefinitely());
 
@@ -518,7 +525,8 @@ class EvaluarCreditoUseCaseTest {
     @Test
     void ejecutar_almacena_score_y_deuda_retornados_por_risk_service() {
         when(riskService.consultarRiesgo(anyString()))
-                .thenReturn(new RiskServicePort.RiskData(92, new BigDecimal("350.00")));
+                .thenReturn(Uni.createFrom().item(
+                        new RiskServicePort.RiskData(92, new BigDecimal("350.00"))));
 
         var result = useCase.ejecutar(CMD).await().indefinitely();
 

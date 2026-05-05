@@ -56,13 +56,13 @@ CREATE UNIQUE INDEX idx_notifications_evaluacion_unique
     ON notifications (evaluacion_id);
 ```
 
-## 3. Entidad JPA — `infrastructure/driven-adapters/postgres`
+## 3. Entidad JPA Reactiva — `infrastructure/driven-adapters/postgres`
 
 ### `NotificationEntity.java`
 ```java
 package com.msnotifications.postgres.entity;
 
-import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import io.quarkus.hibernate.reactive.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import java.time.Instant;
 import java.util.UUID;
@@ -103,8 +103,10 @@ public class NotificationEntity extends PanacheEntityBase {
     public enum TipoNotif { APROBADO, RECHAZADO }
     public enum EstadoNotif { PENDIENTE, ENVIADO, FALLIDO }
 
-    public static boolean existsByEvaluacionIdAndEstado(UUID evalId, EstadoNotif estado) {
-        return count("evaluacionId = ?1 AND estado = ?2", evalId, estado) > 0;
+    public static io.smallrye.mutiny.Uni<Boolean> existsByEvaluacionIdAndEstado(
+            UUID evalId, EstadoNotif estado) {
+        return count("evaluacionId = ?1 AND estado = ?2", evalId, estado)
+                .map(n -> n > 0);
     }
 }
 ```
@@ -133,17 +135,19 @@ public record EvaluacionCompletadaEvent(
 ) {}
 ```
 
-## 5. Email Sender — `infrastructure/driven-adapters/postgres` (o nuevo módulo ses)
+## 5. Email Sender Reactivo — `infrastructure/driven-adapters/postgres`
 
 ### `EmailSenderService.java`
 ```java
 package com.msnotifications.postgres.repository;
 
+import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import software.amazon.awssdk.services.ses.SesClient;
+import software.amazon.awssdk.services.ses.SesAsyncClient;
 import software.amazon.awssdk.services.ses.model.*;
 
 import java.math.BigDecimal;
@@ -153,34 +157,32 @@ public class EmailSenderService {
 
     private static final Logger log = LoggerFactory.getLogger(EmailSenderService.class);
 
-    @jakarta.inject.Inject
-    SesClient sesClient;
+    @Inject
+    SesAsyncClient sesClient;
 
     @ConfigProperty(name = "aws.ses.from.email", defaultValue = "noreply@banco.com")
     String fromEmail;
 
-    public void enviar(String destinatario, String estadoFinal,
-                       BigDecimal monto, String fecha) {
+    public Uni<Void> enviar(String destinatario, String estadoFinal,
+                             BigDecimal monto, String fecha) {
         String asunto = "APROBADO".equals(estadoFinal)
                 ? "Su solicitud de crédito fue APROBADA ✓"
                 : "Su solicitud de crédito fue RECHAZADA";
-
         String cuerpoHtml = generarPlantilla(estadoFinal, monto, fecha);
 
-        try {
-            sesClient.sendEmail(SendEmailRequest.builder()
-                    .destination(d -> d.toAddresses(destinatario))
-                    .message(m -> m
-                            .subject(c -> c.data(asunto).charset("UTF-8"))
-                            .body(b -> b.html(c -> c.data(cuerpoHtml).charset("UTF-8")))
-                    )
-                    .source(fromEmail)
-                    .build());
-            log.info("Email enviado a {}: {}", destinatario, estadoFinal);
-        } catch (Exception e) {
-            log.error("Error enviando email a {}: {}", destinatario, e.getMessage());
-            throw new RuntimeException("Fallo en envío de email", e);
-        }
+        return Uni.createFrom().completionStage(() ->
+                sesClient.sendEmail(SendEmailRequest.builder()
+                        .destination(d -> d.toAddresses(destinatario))
+                        .message(m -> m
+                                .subject(c -> c.data(asunto).charset("UTF-8"))
+                                .body(b -> b.html(c -> c.data(cuerpoHtml).charset("UTF-8")))
+                        )
+                        .source(fromEmail)
+                        .build()))
+                .invoke(r -> log.info("Email enviado a {}: {}", destinatario, estadoFinal))
+                .replaceWithVoid()
+                .onFailure().invoke(e -> log.error("Error enviando email a {}: {}",
+                        destinatario, e.getMessage()));
     }
 
     private String generarPlantilla(String estado, BigDecimal monto, String fecha) {
@@ -208,7 +210,7 @@ public class EmailSenderService {
 }
 ```
 
-## 6. Consumer SQS — `infrastructure/entry-points/sqs-consumer`
+## 6. Consumer SQS Reactivo — `infrastructure/entry-points/sqs-consumer`
 
 ### `NotificationConsumer.java`
 ```java
@@ -218,18 +220,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.msnotifications.model.entity.EvaluacionCompletadaEvent;
 import com.msnotifications.postgres.entity.NotificationEntity;
 import com.msnotifications.postgres.repository.EmailSenderService;
+import io.quarkus.hibernate.reactive.panache.common.ReactiveTransactional;
 import io.quarkus.scheduler.Scheduled;
+import io.smallrye.mutiny.Multi;
+import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import jakarta.transaction.Transactional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.*;
 
 import java.time.Instant;
-import java.util.List;
 import java.util.UUID;
 
 @ApplicationScoped
@@ -237,7 +240,7 @@ public class NotificationConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(NotificationConsumer.class);
 
-    @Inject SqsClient sqsClient;
+    @Inject SqsAsyncClient sqsClient;
     @Inject EmailSenderService emailSender;
     @Inject ObjectMapper objectMapper;
 
@@ -245,71 +248,80 @@ public class NotificationConsumer {
     String queueUrl;
 
     @Scheduled(every = "20s", delayed = "30s")
-    @Transactional
-    public void procesarMensajes() {
-        List<Message> messages = sqsClient.receiveMessage(
-                ReceiveMessageRequest.builder()
+    public Uni<Void> procesarMensajes() {
+        return Uni.createFrom().completionStage(() ->
+                sqsClient.receiveMessage(ReceiveMessageRequest.builder()
                         .queueUrl(queueUrl)
                         .maxNumberOfMessages(10)
                         .waitTimeSeconds(5)
-                        .build()
-        ).messages();
+                        .build()))
+                .chain(response -> {
+                    var messages = response.messages();
+                    if (messages.isEmpty()) return Uni.createFrom().voidItem();
 
-        if (messages.isEmpty()) return;
+                    log.info("Procesando {} mensajes de SQS", messages.size());
 
-        log.info("Procesando {} mensajes de SQS", messages.size());
-
-        for (Message msg : messages) {
-            try {
-                procesarMensaje(msg);
-                eliminar(msg.receiptHandle());
-            } catch (Exception e) {
-                log.error("Error procesando mensaje {}: {}", msg.messageId(), e.getMessage());
-                // No eliminar: SQS reintentará hasta maxReceiveCount (3) → DLQ
-            }
-        }
+                    return Multi.createFrom().iterable(messages)
+                            .onItem().transformToUniAndConcatenate(this::procesarYEliminar)
+                            .collect().asList()
+                            .replaceWithVoid();
+                });
     }
 
-    private void procesarMensaje(Message msg) throws Exception {
-        EvaluacionCompletadaEvent evento = objectMapper.readValue(
-                msg.body(), EvaluacionCompletadaEvent.class);
+    @ReactiveTransactional
+    Uni<Void> procesarYEliminar(Message msg) {
+        return procesarEvento(msg)
+                .chain(() -> eliminar(msg.receiptHandle()))
+                .onFailure().invoke(e ->
+                        log.error("Error procesando mensaje {}: {}", msg.messageId(), e.getMessage()))
+                .onFailure().recoverWithNull(); // no eliminar: SQS reintentará → DLQ
+    }
+
+    private Uni<Void> procesarEvento(Message msg) {
+        EvaluacionCompletadaEvent evento;
+        try {
+            evento = objectMapper.readValue(msg.body(), EvaluacionCompletadaEvent.class);
+        } catch (Exception e) {
+            return Uni.createFrom().failure(e);
+        }
 
         UUID evalId = UUID.fromString(evento.evaluacionId());
 
-        // Idempotencia: verificar si ya fue procesado
-        if (NotificationEntity.existsByEvaluacionIdAndEstado(
-                evalId, NotificationEntity.EstadoNotif.ENVIADO)) {
-            log.info("Notificación ya enviada para evaluacion {} — ignorando", evalId);
-            return;
-        }
+        return NotificationEntity.existsByEvaluacionIdAndEstado(
+                evalId, NotificationEntity.EstadoNotif.ENVIADO)
+                .chain(yaEnviado -> {
+                    if (yaEnviado) {
+                        log.info("Notificación ya enviada para evaluacion {} — ignorando", evalId);
+                        return Uni.createFrom().voidItem();
+                    }
 
-        // Persistir PENDIENTE
-        NotificationEntity notif = new NotificationEntity();
-        notif.evaluacionId = evalId;
-        notif.destinatarioEmail = evento.destinatarioEmail();
-        notif.tipoNotificacion = NotificationEntity.TipoNotif.valueOf(evento.estadoFinal());
-        notif.mensajeSqsId = msg.messageId();
-        NotificationEntity.persist(notif);
+                    NotificationEntity notif = new NotificationEntity();
+                    notif.evaluacionId = evalId;
+                    notif.destinatarioEmail = evento.destinatarioEmail();
+                    notif.tipoNotificacion = NotificationEntity.TipoNotif.valueOf(evento.estadoFinal());
+                    notif.mensajeSqsId = msg.messageId();
 
-        // Enviar email
-        emailSender.enviar(
-                evento.destinatarioEmail(),
-                evento.estadoFinal(),
-                evento.montoSolicitado(),
-                evento.fechaEvaluacion()
-        );
-
-        // Actualizar a ENVIADO
-        notif.estado = NotificationEntity.EstadoNotif.ENVIADO;
-        notif.enviadoEn = Instant.now();
-        notif.intentos++;
+                    return notif.<NotificationEntity>persist()
+                            .chain(n -> emailSender.enviar(
+                                    evento.destinatarioEmail(),
+                                    evento.estadoFinal(),
+                                    evento.montoSolicitado(),
+                                    evento.fechaEvaluacion())
+                                    .invoke(() -> {
+                                        n.estado = NotificationEntity.EstadoNotif.ENVIADO;
+                                        n.enviadoEn = Instant.now();
+                                        n.intentos++;
+                                    }));
+                });
     }
 
-    private void eliminar(String receiptHandle) {
-        sqsClient.deleteMessage(DeleteMessageRequest.builder()
-                .queueUrl(queueUrl)
-                .receiptHandle(receiptHandle)
-                .build());
+    private Uni<Void> eliminar(String receiptHandle) {
+        return Uni.createFrom().completionStage(() ->
+                sqsClient.deleteMessage(DeleteMessageRequest.builder()
+                        .queueUrl(queueUrl)
+                        .receiptHandle(receiptHandle)
+                        .build()))
+                .replaceWithVoid();
     }
 }
 ```
@@ -413,10 +425,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
 import org.mockito.junit.jupiter.MockitoExtension;
-import software.amazon.awssdk.services.ses.SesClient;
+import software.amazon.awssdk.services.ses.SesAsyncClient;
 import software.amazon.awssdk.services.ses.model.*;
 
 import java.math.BigDecimal;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -426,7 +439,7 @@ import static org.mockito.Mockito.*;
 class EmailSenderServiceTest {
 
     @Mock
-    SesClient sesClient;
+    SesAsyncClient sesClient;
 
     @InjectMocks
     EmailSenderService emailSender;
@@ -434,10 +447,12 @@ class EmailSenderServiceTest {
     @Test
     void enviar_APROBADO_usa_asunto_con_APROBADA() {
         when(sesClient.sendEmail(any(SendEmailRequest.class)))
-                .thenReturn(SendEmailResponse.builder().messageId("ses-001").build());
+                .thenReturn(CompletableFuture.completedFuture(
+                        SendEmailResponse.builder().messageId("ses-001").build()));
 
         emailSender.enviar("dest@email.com", "APROBADO",
-                new BigDecimal("5000.00"), "2026-05-05T14:30:00Z");
+                new BigDecimal("5000.00"), "2026-05-05T14:30:00Z")
+                .await().indefinitely();
 
         var captor = ArgumentCaptor.forClass(SendEmailRequest.class);
         verify(sesClient).sendEmail(captor.capture());
@@ -451,10 +466,12 @@ class EmailSenderServiceTest {
     @Test
     void enviar_RECHAZADO_usa_asunto_con_RECHAZADA() {
         when(sesClient.sendEmail(any(SendEmailRequest.class)))
-                .thenReturn(SendEmailResponse.builder().messageId("ses-002").build());
+                .thenReturn(CompletableFuture.completedFuture(
+                        SendEmailResponse.builder().messageId("ses-002").build()));
 
         emailSender.enviar("dest@email.com", "RECHAZADO",
-                new BigDecimal("3000.00"), "2026-05-05T14:30:00Z");
+                new BigDecimal("3000.00"), "2026-05-05T14:30:00Z")
+                .await().indefinitely();
 
         var captor = ArgumentCaptor.forClass(SendEmailRequest.class);
         verify(sesClient).sendEmail(captor.capture());
@@ -465,9 +482,11 @@ class EmailSenderServiceTest {
     @Test
     void enviar_llama_a_ses_exactamente_una_vez() {
         when(sesClient.sendEmail(any(SendEmailRequest.class)))
-                .thenReturn(SendEmailResponse.builder().messageId("ses-003").build());
+                .thenReturn(CompletableFuture.completedFuture(
+                        SendEmailResponse.builder().messageId("ses-003").build()));
 
-        emailSender.enviar("a@b.com", "APROBADO", BigDecimal.ONE, "2026-05-05T00:00:00Z");
+        emailSender.enviar("a@b.com", "APROBADO", BigDecimal.ONE, "2026-05-05T00:00:00Z")
+                .await().indefinitely();
 
         verify(sesClient, times(1)).sendEmail(any(SendEmailRequest.class));
     }
@@ -475,21 +494,24 @@ class EmailSenderServiceTest {
     @Test
     void fallo_de_ses_propaga_excepcion() {
         when(sesClient.sendEmail(any(SendEmailRequest.class)))
-                .thenThrow(SesException.builder().message("SES error").build());
+                .thenReturn(CompletableFuture.failedFuture(
+                        SesException.builder().message("SES error").build()));
 
         assertThatException()
                 .isThrownBy(() -> emailSender.enviar(
                         "dest@email.com", "APROBADO",
-                        BigDecimal.ONE, "2026-05-05T00:00:00Z"));
+                        BigDecimal.ONE, "2026-05-05T00:00:00Z").await().indefinitely());
     }
 
     @Test
     void cuerpo_html_APROBADO_contiene_monto() {
         when(sesClient.sendEmail(any(SendEmailRequest.class)))
-                .thenReturn(SendEmailResponse.builder().messageId("ses-004").build());
+                .thenReturn(CompletableFuture.completedFuture(
+                        SendEmailResponse.builder().messageId("ses-004").build()));
 
         emailSender.enviar("dest@email.com", "APROBADO",
-                new BigDecimal("7500.00"), "2026-05-05T14:30:00Z");
+                new BigDecimal("7500.00"), "2026-05-05T14:30:00Z")
+                .await().indefinitely();
 
         var captor = ArgumentCaptor.forClass(SendEmailRequest.class);
         verify(sesClient).sendEmail(captor.capture());
@@ -501,8 +523,8 @@ class EmailSenderServiceTest {
 
 ### Prueba de Integración — `NotificationConsumerIT.java`
 
-> `@QuarkusTest` con DevServices PostgreSQL. SQS se inyecta como mock CDI
-> para controlar los mensajes que recibe el consumer sin LocalStack.
+> `@QuarkusTest` con DevServices PostgreSQL. SQS y SES se inyectan como mocks CDI
+> usando clientes async para controlar los mensajes sin LocalStack.
 
 Ubicación: `infrastructure/entry-points/sqs-consumer/src/test/java/com/msnotifications/sqsconsumer/adapter/`
 
@@ -514,48 +536,50 @@ import com.msnotifications.postgres.entity.NotificationEntity;
 import com.msnotifications.postgres.repository.EmailSenderService;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.vertx.RunOnVertxContext;
+import io.quarkus.test.vertx.TestReactiveTransaction;
+import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import jakarta.transaction.Transactional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.*;
 
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 @QuarkusTest
+@RunOnVertxContext
 class NotificationConsumerIT {
 
     @Inject
     NotificationConsumer consumer;
 
     @InjectMock
-    SqsClient sqsClient;
+    SqsAsyncClient sqsClient;
 
     @InjectMock
     EmailSenderService emailSender;
 
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private static final String EVAL_ID = UUID.randomUUID().toString();
-
     private Message mensajeValido(String evaluacionId) throws Exception {
         var evento = mapper.writeValueAsString(java.util.Map.of(
-                "evaluacionId",     evaluacionId,
-                "cedula",           "1713175071",
-                "destinatarioEmail","test@email.com",
-                "estadoFinal",      "APROBADO",
-                "montoSolicitado",  new BigDecimal("5000.00"),
-                "moneda",           "USD",
-                "plazoAnios",       3,
-                "fechaEvaluacion",  "2026-05-05T14:30:00Z",
-                "version",          "1.0"
+                "evaluacionId",      evaluacionId,
+                "cedula",            "1713175071",
+                "destinatarioEmail", "test@email.com",
+                "estadoFinal",       "APROBADO",
+                "montoSolicitado",   new BigDecimal("5000.00"),
+                "moneda",            "USD",
+                "plazoAnios",        3,
+                "fechaEvaluacion",   "2026-05-05T14:30:00Z",
+                "version",           "1.0"
         ));
         return Message.builder()
                 .messageId(UUID.randomUUID().toString())
@@ -566,86 +590,93 @@ class NotificationConsumerIT {
 
     @BeforeEach
     void setUp() {
-        doNothing().when(sqsClient).deleteMessage(any(DeleteMessageRequest.class));
+        when(sqsClient.deleteMessage(any(DeleteMessageRequest.class)))
+                .thenReturn(CompletableFuture.completedFuture(
+                        DeleteMessageResponse.builder().build()));
     }
 
     // ── Happy path ────────────────────────────────────────────
 
     @Test
-    @Transactional
-    void procesar_mensaje_valido_guarda_notificacion_ENVIADO() throws Exception {
+    @TestReactiveTransaction
+    Uni<Void> procesar_mensaje_valido_guarda_notificacion_ENVIADO() throws Exception {
         var evalId = UUID.randomUUID().toString();
         var msg = mensajeValido(evalId);
 
         when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
-                .thenReturn(ReceiveMessageResponse.builder().messages(List.of(msg)).build());
+                .thenReturn(CompletableFuture.completedFuture(
+                        ReceiveMessageResponse.builder().messages(List.of(msg)).build()));
+        when(emailSender.enviar(any(), any(), any(), any()))
+                .thenReturn(Uni.createFrom().voidItem());
 
-        doNothing().when(emailSender).enviar(any(), any(), any(), any());
-
-        consumer.procesarMensajes();
-
-        var count = NotificationEntity.count("evaluacionId = ?1 AND estado = ?2",
-                UUID.fromString(evalId), NotificationEntity.EstadoNotif.ENVIADO);
-        assertThat(count).isEqualTo(1L);
+        return consumer.procesarMensajes()
+                .chain(() -> NotificationEntity.count(
+                        "evaluacionId = ?1 AND estado = ?2",
+                        UUID.fromString(evalId), NotificationEntity.EstadoNotif.ENVIADO))
+                .invoke(count -> assertThat(count).isEqualTo(1L))
+                .replaceWithVoid();
     }
 
     @Test
-    @Transactional
-    void procesar_mensaje_envia_email_exactamente_una_vez() throws Exception {
+    @TestReactiveTransaction
+    Uni<Void> procesar_mensaje_envia_email_exactamente_una_vez() throws Exception {
         var msg = mensajeValido(UUID.randomUUID().toString());
 
         when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
-                .thenReturn(ReceiveMessageResponse.builder().messages(List.of(msg)).build());
-        doNothing().when(emailSender).enviar(any(), any(), any(), any());
+                .thenReturn(CompletableFuture.completedFuture(
+                        ReceiveMessageResponse.builder().messages(List.of(msg)).build()));
+        when(emailSender.enviar(any(), any(), any(), any()))
+                .thenReturn(Uni.createFrom().voidItem());
 
-        consumer.procesarMensajes();
-
-        verify(emailSender, times(1)).enviar(
-                eq("test@email.com"), eq("APROBADO"), any(), any());
+        return consumer.procesarMensajes()
+                .invoke(() -> verify(emailSender, times(1))
+                        .enviar(eq("test@email.com"), eq("APROBADO"), any(), any()));
     }
 
     @Test
-    @Transactional
-    void procesar_elimina_mensaje_de_sqs_tras_exito() throws Exception {
+    @TestReactiveTransaction
+    Uni<Void> procesar_elimina_mensaje_de_sqs_tras_exito() throws Exception {
         var msg = mensajeValido(UUID.randomUUID().toString());
 
         when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
-                .thenReturn(ReceiveMessageResponse.builder().messages(List.of(msg)).build());
-        doNothing().when(emailSender).enviar(any(), any(), any(), any());
+                .thenReturn(CompletableFuture.completedFuture(
+                        ReceiveMessageResponse.builder().messages(List.of(msg)).build()));
+        when(emailSender.enviar(any(), any(), any(), any()))
+                .thenReturn(Uni.createFrom().voidItem());
 
-        consumer.procesarMensajes();
-
-        verify(sqsClient, times(1)).deleteMessage(any(DeleteMessageRequest.class));
+        return consumer.procesarMensajes()
+                .invoke(() -> verify(sqsClient, times(1))
+                        .deleteMessage(any(DeleteMessageRequest.class)));
     }
 
     // ── Idempotencia ──────────────────────────────────────────
 
     @Test
-    @Transactional
-    void mensaje_duplicado_no_genera_segundo_email_ni_fila() throws Exception {
+    @TestReactiveTransaction
+    Uni<Void> mensaje_duplicado_no_genera_segundo_email_ni_fila() throws Exception {
         var evalId = UUID.randomUUID().toString();
         var msg = mensajeValido(evalId);
 
         when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
-                .thenReturn(ReceiveMessageResponse.builder().messages(List.of(msg)).build());
-        doNothing().when(emailSender).enviar(any(), any(), any(), any());
+                .thenReturn(CompletableFuture.completedFuture(
+                        ReceiveMessageResponse.builder().messages(List.of(msg)).build()));
+        when(emailSender.enviar(any(), any(), any(), any()))
+                .thenReturn(Uni.createFrom().voidItem());
 
         // Primera ejecución: procesa
-        consumer.procesarMensajes();
-        // Segunda ejecución: mismo mensaje (SQS at-least-once)
-        consumer.procesarMensajes();
-
-        verify(emailSender, times(1)).enviar(any(), any(), any(), any());
-
-        var count = NotificationEntity.count("evaluacionId = ?1",
-                UUID.fromString(evalId));
-        assertThat(count).isEqualTo(1L);
+        return consumer.procesarMensajes()
+                // Segunda ejecución: mismo mensaje (SQS at-least-once)
+                .chain(() -> consumer.procesarMensajes())
+                .invoke(() -> verify(emailSender, times(1)).enviar(any(), any(), any(), any()))
+                .chain(() -> NotificationEntity.count("evaluacionId = ?1", UUID.fromString(evalId)))
+                .invoke(count -> assertThat(count).isEqualTo(1L))
+                .replaceWithVoid();
     }
 
     // ── Resiliencia ───────────────────────────────────────────
 
     @Test
-    void mensaje_malformado_no_elimina_mensaje_de_sqs() {
+    Uni<Void> mensaje_malformado_no_elimina_mensaje_de_sqs() {
         var msgMalformado = Message.builder()
                 .messageId("bad-msg")
                 .receiptHandle("rh-bad")
@@ -653,39 +684,38 @@ class NotificationConsumerIT {
                 .build();
 
         when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
-                .thenReturn(ReceiveMessageResponse.builder()
-                        .messages(List.of(msgMalformado)).build());
+                .thenReturn(CompletableFuture.completedFuture(
+                        ReceiveMessageResponse.builder()
+                                .messages(List.of(msgMalformado)).build()));
 
-        // No debe lanzar excepción al procesarMensajes
-        assertThatNoException().isThrownBy(() -> consumer.procesarMensajes());
-
-        // El mensaje no se elimina: SQS lo reintentará
-        verify(sqsClient, never()).deleteMessage(any(DeleteMessageRequest.class));
+        return consumer.procesarMensajes()
+                .invoke(() -> verify(sqsClient, never())
+                        .deleteMessage(any(DeleteMessageRequest.class)));
     }
 
     @Test
-    void fallo_de_ses_no_elimina_mensaje_de_sqs() throws Exception {
+    Uni<Void> fallo_de_ses_no_elimina_mensaje_de_sqs() throws Exception {
         var msg = mensajeValido(UUID.randomUUID().toString());
 
         when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
-                .thenReturn(ReceiveMessageResponse.builder().messages(List.of(msg)).build());
-        doThrow(new RuntimeException("SES unavailable"))
-                .when(emailSender).enviar(any(), any(), any(), any());
+                .thenReturn(CompletableFuture.completedFuture(
+                        ReceiveMessageResponse.builder().messages(List.of(msg)).build()));
+        when(emailSender.enviar(any(), any(), any(), any()))
+                .thenReturn(Uni.createFrom().failure(new RuntimeException("SES unavailable")));
 
-        assertThatNoException().isThrownBy(() -> consumer.procesarMensajes());
-
-        // Mensaje NO se elimina → SQS reintentará hasta maxReceiveCount → DLQ
-        verify(sqsClient, never()).deleteMessage(any(DeleteMessageRequest.class));
+        return consumer.procesarMensajes()
+                .invoke(() -> verify(sqsClient, never())
+                        .deleteMessage(any(DeleteMessageRequest.class)));
     }
 
     @Test
-    void cola_vacia_no_llama_a_emailSender() {
+    Uni<Void> cola_vacia_no_llama_a_emailSender() {
         when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
-                .thenReturn(ReceiveMessageResponse.builder().messages(List.of()).build());
+                .thenReturn(CompletableFuture.completedFuture(
+                        ReceiveMessageResponse.builder().messages(List.of()).build()));
 
-        consumer.procesarMensajes();
-
-        verifyNoInteractions(emailSender);
+        return consumer.procesarMensajes()
+                .invoke(() -> verifyNoInteractions(emailSender));
     }
 }
 ```
