@@ -69,7 +69,7 @@ El sistema **no** incluye:
 
 ## Scaffold — Crear estructura base de microservicios
 
-`scaffold/MavenHexagonalScaffold.java` (v2.0) es la herramienta oficial para generar la estructura base de cada microservicio del sistema. Produce un proyecto Maven multimódulo con **arquitectura hexagonal**, **Quarkus 3.17.4 Reactivo + Mutiny**, **PostgreSQL reactivo**, autenticación por token contra **Keycloak** (OIDC), **Lombok**, **SmallRye Health** y, opcionalmente, integración con **AWS SQS**.
+`scaffold/MavenHexagonalScaffold.java` (v2.1) es la herramienta oficial para generar la estructura base de cada microservicio del sistema. Produce un proyecto Maven multimódulo con **arquitectura hexagonal**, **Quarkus 3.17.4 Reactivo + Mutiny**, **PostgreSQL reactivo**, autenticación por token contra **Keycloak** (OIDC), **SmallRye JWT**, **Hibernate Validator**, **SmallRye Health** y, opcionalmente, integración con **AWS SQS**. Incluye dependencias de test (JUnit 5, Mockito, AssertJ, REST-Assured) y expone **Swagger UI** en modo dev (`/swagger-ui`).
 
 ### Prerrequisitos
 
@@ -126,28 +126,36 @@ jbang scaffold/MavenHexagonalScaffold.java -n ms-notifications -m sqs-consumer
 ├── .gitignore
 │
 ├── domain/
-│   └── model/                                     ← Entidades, Value Objects, puertos (interfaces)
+│   └── model/
+│       └── com.{svc}.model.{entity,port,valueobject}/   ← Entidades, Value Objects, puertos
 │
 ├── application/
-│   └── use-cases/                                 ← Casos de uso con Mutiny (Uni<T>)
+│   └── use-cases/
+│       └── com.{svc}.usecases.{command,result,exception}/  ← Casos de uso (Uni<T>)
 │
 ├── infrastructure/
 │   ├── driven-adapters/
-│   │   ├── postgres/                              ← Hibernate Reactive Panache + reactive-pg-client
+│   │   ├── postgres/
+│   │   │   └── com.{svc}.postgres.{entity,repository,mapper}/  ← Hibernate Reactive Panache
 │   │   └── sqs-producer/          [opcional -m sqs-producer]
-│   │       └── SqsMessagePublisher.java
+│   │       └── com.{svc}.sqsproducer.adapter/
+│   │           └── SqsMessagePublisher.java
 │   │
 │   └── entry-points/
-│       ├── rest-api/                              ← JAX-RS Reactive (RESTEasy Reactive + Jackson)
-│       │   └── HelloResource.java
+│       ├── rest-api/
+│       │   └── com.{svc}.restapi.{dto,resource,exception,mapper}/
+│       │       └── resource/HelloResource.java    ← JAX-RS Reactive + Hibernate Validator
 │       ├── app/                                   ← Módulo ejecutable: Quarkus main, BeanConfig, application.properties
 │       │   ├── src/main/resources/application.properties
 │       │   └── src/main/java/com/{servicename}/
 │       │       ├── MainApplication.java
 │       │       └── BeanConfig.java
 │       └── sqs-consumer/          [opcional -m sqs-consumer]
-│           └── SqsMessageConsumer.java            ← Polling reactivo con @Scheduled + Uni<Void>
+│           └── com.{svc}.sqsconsumer.adapter/
+│               └── SqsMessageConsumer.java        ← Polling reactivo con @Scheduled + Uni<Void>
 ```
+
+La versión 2.1 genera automáticamente los sub-paquetes por capa (`entity`, `port`, `valueobject`, `command`, `result`, `mapper`, etc.) mediante el método `createSubPackages`, evitando crearlos a mano.
 
 ### Configuración post-generación
 
@@ -227,6 +235,11 @@ mvn quarkus:dev
 | Autenticación ms-credit-evaluation | JWT validado contra JWKS de Keycloak (sin llamadas runtime síncronas) |
 | Comunicación ms-credit-evaluation → ms-notifications | Asíncrona vía AWS SQS (fire-and-forget) |
 | Contenedores | Docker + Docker Compose |
+| CI/CD — Secret Scanning | GitLeaks |
+| CI/CD — SAST | SonarQube / SonarCloud |
+| CI/CD — Dependency Check | OWASP Dependency Check (failBuildOnCVSS=7) |
+| CI/CD — Image Scan | Trivy (severity: HIGH, CRITICAL) |
+| Automatización CI/CD | GitHub Actions |
 
 ---
 
@@ -253,6 +266,122 @@ mvn quarkus:dev
 - Gestiona el estado de cada notificación en su propia base de datos (`notifications_db`)
 - Dead Letter Queue (DLQ) para mensajes fallidos tras 3 intentos
 - `ms-credit-evaluation` solo publica en SQS — no conoce a `ms-notifications`
+
+---
+
+## Inicio Rápido
+
+### Modo desarrollo (infraestructura en Docker, microservicios locales)
+
+```bash
+# 1. Levantar PostgreSQL × 3, Keycloak y LocalStack
+docker compose -f docker-compose.infra.yml up -d
+
+# 2. Arrancar cada microservicio en su propia terminal
+cd ms-risk/infrastructure/entry-points/app && mvn quarkus:dev
+cd ms-credit-evaluation/infrastructure/entry-points/app && mvn quarkus:dev
+cd ms-notifications/infrastructure/entry-points/app && mvn quarkus:dev
+
+# 3. Swagger UI disponible en modo dev
+# ms-credit-evaluation: http://localhost:8080/swagger-ui
+# ms-risk:              http://localhost:8081/swagger-ui
+```
+
+### Stack completo con Docker Compose
+
+```bash
+# Build de todas las imágenes y levantar
+docker compose build
+docker compose up -d
+
+# Verificar estado
+docker compose ps
+curl -s http://localhost:8080/q/health | jq .status   # ms-credit-evaluation: UP
+curl -s http://localhost:8081/q/health | jq .status   # ms-risk: UP
+curl -s http://localhost:8083/q/health | jq .status   # ms-notifications: UP
+curl -s http://localhost:9000/health/ready             # Keycloak: UP
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000  # Frontend: 200
+
+# Teardown
+docker compose down        # conserva volúmenes
+docker compose down -v     # reset completo
+```
+
+**Puertos del sistema:**
+
+| Servicio | Puerto |
+|----------|--------|
+| Frontend (React) | `3000` |
+| ms-credit-evaluation | `8080` |
+| ms-risk | `8081` |
+| ms-notifications | `8083` |
+| Keycloak Admin Console | `9000` |
+| LocalStack (SQS + SES) | `4566` |
+| PostgreSQL — creditos_db | `5432` |
+| PostgreSQL — notifications_db | `5434` |
+| PostgreSQL — keycloak_db | `5435` |
+
+---
+
+## CI/CD Security Pipeline
+
+El pipeline de seguridad se define en `.github/workflows/security.yml` y bloquea PRs que no superen todos los gates.
+
+| Job | Herramienta | Condición de bloqueo |
+|-----|-------------|----------------------|
+| Secret Scanning | **GitLeaks** | Cualquier secreto detectado en el diff |
+| SAST | **SonarQube** | Quality Gate fallido o issue de seguridad nuevo |
+| Dependency Vulnerabilities | **OWASP Dependency Check** | CVE con CVSS ≥ 7.0 sin supresión justificada |
+| Docker Image Scan | **Trivy** (×3 servicios) | Vulnerabilidad CRITICAL en imagen |
+
+El pipeline se activa en cada push a `main`/`develop` y en todo PR hacia `main`. Los gates están reforzados mediante **Branch Protection Rules** en GitHub (require status checks + 1 approver).
+
+### Pre-commit hook local (GitLeaks)
+
+```bash
+# Instalar GitLeaks (Linux)
+curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/main/scripts/install.sh | sh -s -- -b /usr/local/bin
+
+# Registrar hook
+cat > .git/hooks/pre-commit << 'EOF'
+#!/bin/sh
+gitleaks protect --staged --verbose
+EOF
+chmod +x .git/hooks/pre-commit
+```
+
+### Security Acceptance Criteria (SDD)
+
+Una funcionalidad está **done** desde la perspectiva de seguridad cuando:
+
+- Escenarios BDD de seguridad pasan: sin JWT → 401, rol incorrecto → 403, input inválido → 422
+- No existen CVEs CVSS ≥ 7 sin suprimir en las dependencias del servicio modificado
+- El análisis SAST no introduce nuevos issues tipo Bug o Vulnerability
+- No hay secretos en el diff del PR (GitLeaks pasa sin alertas)
+- El endpoint nuevo tiene `@RolesAllowed` o `@Authenticated` explícito y `@Valid` en el input
+- La imagen Docker no tiene vulnerabilidades CRITICAL
+
+---
+
+## Plan de Desarrollo
+
+Implementación paso a paso del sistema completo. Cada paso tiene prerrequisitos, código completo y criterios de verificación.
+
+| # | Paso | Descripción |
+|---|------|-------------|
+| 01 | [Infraestructura Local](./development-plan/01-infraestructura-local.md) | `docker-compose.infra.yml`: PostgreSQL ×3, Keycloak y LocalStack |
+| 02 | [Keycloak Realm](./development-plan/02-keycloak-realm.md) | Configuración del realm `banco`, clientes OIDC, roles y usuarios de prueba |
+| 03 | [ms-risk](./development-plan/03-ms-risk.md) | Mock REST: `GET /v1/risk/score/{cedula}` y `GET /v1/risk/debts/{cedula}` |
+| 04 | [ms-credit-evaluation — Dominio](./development-plan/04-ms-credit-evaluation-dominio.md) | Value Objects (`Cedula`, `Dinero`), Agregado raíz, Puertos + tests JUnit puro |
+| 05 | [ms-credit-evaluation — BD](./development-plan/05-ms-credit-evaluation-bd.md) | Migraciones Flyway, entidad Panache, repositorio reactivo |
+| 06 | [ms-credit-evaluation — Caso de Uso](./development-plan/06-ms-credit-evaluation-usecase.md) | `EvaluarCreditoUseCase` con llamadas paralelas Mutiny + tests Mockito |
+| 07 | [ms-credit-evaluation — API REST](./development-plan/07-ms-credit-evaluation-api.md) | `CreditEvaluationResource`, DTOs con `@Valid`, manejo de errores, tests REST-Assured |
+| 08 | [ms-notifications](./development-plan/08-ms-notifications.md) | SQS consumer, AWS SES, idempotencia, DLQ |
+| 09 | [LocalStack SQS + SES](./development-plan/09-localstack-sqs-ses.md) | Colas (`credit-evaluation-notifications`, DLQ) y verificación de emails |
+| 10 | [Frontend React](./development-plan/10-frontend-react.md) | Keycloak JS Adapter, formulario de evaluación, tabla de resultados |
+| 11 | [Docker Compose Completo](./development-plan/11-docker-compose-completo.md) | Dockerfiles para los 3 servicios y frontend; `docker-compose.yml` unificado |
+| 12 | [CI/CD Security Pipeline](./development-plan/12-cicd-security-pipeline.md) | GitHub Actions: GitLeaks, SonarQube, OWASP, Trivy + branch protection rules |
+| 13 | [Verificación End-to-End](./development-plan/13-verificacion-end-to-end.md) | Happy path, controles de acceso, inyección SQL, resiliencia, idempotencia |
 
 ---
 
