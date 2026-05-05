@@ -1,19 +1,82 @@
 # Sistema de Evaluación de Créditos
 
-Mini-ecosistema de evaluación de créditos compuesto por un Frontend React, tres microservicios Java Quarkus (`ms-credit-evaluation` orquestador, `ms-risk` riesgos mock, `ms-notifications` notificaciones asíncronas) y **Keycloak** como proveedor de identidad OIDC.
+Sistema bancario que determina si una persona es sujeta de crédito en función de su perfil de riesgo y capacidad de pago. Compuesto por un Frontend React, tres microservicios Java Quarkus y **Keycloak** como proveedor de identidad OIDC, diseñado con **DDD**, **arquitectura hexagonal**, **programación reactiva (Mutiny)** y **Security-Driven Development (SDD)**.
+
+---
+
+## Propósito y Dominio
+
+El **Core Domain** es la evaluación de crédito: orquestar el análisis de riesgo, aplicar las reglas de negocio y persistir el resultado. Dos dominios de soporte lo complementan sin acoplarse a él.
+
+| Subdominio | Tipo | Implementación |
+|------------|------|----------------|
+| Evaluación de Crédito | **Core Domain** | `ms-credit-evaluation :8080` |
+| Valoración de Riesgos | Supporting Domain | `ms-risk :8081` (mock) |
+| Notificaciones | Supporting Domain | `ms-notifications :8083` |
+| Identidad y Acceso | Generic Domain | Keycloak 24.x `:9000` — realm `banco` |
+
+### Regla de aprobación
+
+```
+score > 70  AND  (deudaMensual + cuotaNueva) < salario × 0.40
+```
+
+- **score**: obtenido de `ms-risk` (0–100)
+- **capacidad de pago**: el solicitante no puede comprometer más del 40 % de su salario mensual
+- **cédula**: validada con algoritmo Módulo 10 ecuatoriano antes de consultar `ms-risk`
+
+---
+
+## Actores
+
+| Actor | Rol en Keycloak | Puede evaluar | Puede consultar | Gestiona usuarios |
+|-------|----------------|:---:|:---:|:---:|
+| Analista de Crédito | `ANALYST` | ✅ | ✅ | ❌ |
+| Administrador | `ADMIN` | ✅ | ✅ | ✅ (Admin Console) |
+| Viewer | `VIEWER` | ❌ | ✅ | ❌ |
+| Solicitante | — (externo) | ❌ | ❌ | recibe email |
+
+> El solicitante no opera el sistema; el analista ingresa los datos en su nombre y el resultado llega por email vía AWS SES.
+
+---
+
+## Flujo de Evaluación
+
+```
+1. Analista inicia sesión    → Keycloak emite JWT (RS256, Authorization Code + PKCE)
+2. Frontend envía solicitud  → POST /v1/credit-evaluations  [Bearer JWT]
+3. ms-credit-evaluation      → valida JWT contra JWKS de Keycloak (sin llamada síncrona runtime)
+4. Llamadas paralelas        → GET /score/{cedula}  +  GET /deudas/{cedula}  [ms-risk, ~2s]
+5. Regla de negocio          → APROBADO si score > 70 AND capacidad de pago < 40%
+6. Persistencia              → creditos_db (PostgreSQL)
+7. Publicación asíncrona     → AWS SQS (fire-and-forget, ms-credit-evaluation no conoce ms-notifications)
+8. ms-notifications (polling → cada 5s) consume SQS → envía email vía AWS SES → actualiza notifications_db
+```
+
+Las llamadas a `ms-risk` se ejecutan **en paralelo con Mutiny** (`Uni.combine().all()`), reduciendo la latencia de 3.5 s a ~2 s (−43 %).
+
+---
+
+## Fuera del Alcance
+
+El sistema **no** incluye:
+- Consulta a burós de crédito reales (se usa mock en `ms-risk`)
+- Portal de autoservicio para el solicitante
+- Integración con core bancario
+- SSO / federación LDAP (Keycloak lo soporta, pero no está configurado)
 
 ---
 
 ## Scaffold — Crear estructura base de microservicios
 
-`scaffold/MavenHexagonalScaffold.java` es la herramienta oficial para generar la estructura base de cada microservicio del sistema. Produce un proyecto Maven multimódulo con **arquitectura hexagonal**, **Quarkus Reactivo + Mutiny**, **PostgreSQL reactivo**, autenticación por token contra **Keycloak** (OIDC) y, opcionalmente, integración con **AWS SQS**.
+`scaffold/MavenHexagonalScaffold.java` (v2.0) es la herramienta oficial para generar la estructura base de cada microservicio del sistema. Produce un proyecto Maven multimódulo con **arquitectura hexagonal**, **Quarkus 3.17.4 Reactivo + Mutiny**, **PostgreSQL reactivo**, autenticación por token contra **Keycloak** (OIDC), **Lombok**, **SmallRye Health** y, opcionalmente, integración con **AWS SQS**.
 
 ### Prerrequisitos
 
 | Herramienta | Versión mínima |
 |-------------|---------------|
 | [jbang](https://www.jbang.dev/download/) | 0.115+ |
-| Java | 17+ |
+| Java | 21+ |
 
 Verificar instalación:
 
@@ -78,9 +141,10 @@ jbang scaffold/MavenHexagonalScaffold.java -n ms-notifications -m sqs-consumer
 │       ├── rest-api/                              ← JAX-RS Reactive (RESTEasy Reactive + Jackson)
 │       │   └── HelloResource.java
 │       ├── app/                                   ← Módulo ejecutable: Quarkus main, BeanConfig, application.properties
-│       │   ├── MainApplication.java
-│       │   ├── BeanConfig.java
-│       │   └── src/main/resources/application.properties
+│       │   ├── src/main/resources/application.properties
+│       │   └── src/main/java/com/{servicename}/
+│       │       ├── MainApplication.java
+│       │       └── BeanConfig.java
 │       └── sqs-consumer/          [opcional -m sqs-consumer]
 │           └── SqsMessageConsumer.java            ← Polling reactivo con @Scheduled + Uni<Void>
 ```
@@ -151,9 +215,9 @@ mvn quarkus:dev
 | Capa | Tecnología |
 |------|-----------|
 | Frontend | React 18, TypeScript, Axios, Keycloak JS Adapter |
-| ms-credit-evaluation | Java 21, Quarkus 3.x, Hibernate Reactive Panache |
-| ms-risk | Java 21, Quarkus 3.x |
-| ms-notifications | Java 21, Quarkus 3.x, AWS SDK v2 |
+| ms-credit-evaluation | Java 21, Quarkus 3.17.4, Hibernate Reactive Panache |
+| ms-risk | Java 21, Quarkus 3.17.4 |
+| ms-notifications | Java 21, Quarkus 3.17.4, AWS SDK v2 |
 | IAM / Autenticación | Keycloak 24.x (OIDC + OAuth2) |
 | Base de Datos (ms-credit-evaluation) | PostgreSQL 16 — `creditos_db` |
 | Base de Datos (ms-notifications) | PostgreSQL 16 — `notifications_db` |
