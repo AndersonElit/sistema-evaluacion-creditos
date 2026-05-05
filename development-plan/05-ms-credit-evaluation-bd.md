@@ -243,9 +243,162 @@ curl -s http://localhost:8080/q/health | jq .status
 # "UP"
 ```
 
+---
+
+## Prueba de Integración — Repositorio con Testcontainers
+
+> Levanta un PostgreSQL real en Docker durante el test — no requiere la base de datos del paso 01.
+
+### Dependencias adicionales — `infrastructure/driven-adapters/postgres/pom.xml`
+
+```xml
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-junit5</artifactId>
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-test-h2</artifactId>
+    <scope>test</scope>
+</dependency>
+<!-- Alternativa con PostgreSQL real vía Testcontainers -->
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-devservices-postgresql</artifactId>
+    <scope>test</scope>
+</dependency>
+```
+
+### `application.properties` de test — `src/test/resources/application.properties`
+
+Quarkus DevServices levanta PostgreSQL automáticamente cuando detecta el perfil `test`:
+
+```properties
+# Quarkus DevServices levanta automáticamente un contenedor PostgreSQL para test
+quarkus.datasource.db-kind=postgresql
+quarkus.hibernate-orm.database.generation=drop-and-create
+quarkus.flyway.migrate-at-start=true
+quarkus.flyway.locations=classpath:db/migration
+```
+
+### `CreditEvaluationRepositoryIT.java`
+
+Ubicación: `infrastructure/driven-adapters/postgres/src/test/java/com/mscreditevaluation/postgres/`
+
+```java
+package com.mscreditevaluation.postgres;
+
+import com.mscreditevaluation.model.*;
+import io.quarkus.test.junit.QuarkusTest;
+import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.*;
+
+@QuarkusTest
+class CreditEvaluationRepositoryIT {
+
+    @Inject
+    CreditEvaluationRepositoryAdapter repository;
+
+    private EvaluacionCredito evaluacionValida() {
+        return EvaluacionCredito.builder()
+                .cedula(new Cedula("1713175071"))
+                .montoSolicitado(Dinero.usd(new BigDecimal("5000.00")))
+                .plazoAnios(3)
+                .salario(Dinero.usd(new BigDecimal("2000.00")))
+                .scoreRiesgo(new ScoreRiesgo(85))
+                .deudaMensual(Dinero.usd(new BigDecimal("200.00")))
+                .estadoFinal(EstadoEvaluacion.APROBADO)
+                .evaluadoPorId(UUID.randomUUID())
+                .build();
+    }
+
+    @Test
+    @Transactional
+    void guardar_persiste_y_asigna_id() {
+        var evaluacion = evaluacionValida();
+        var guardada = repository.guardar(evaluacion);
+
+        assertThat(guardada.getId()).isNotNull();
+        assertThat(guardada.getCedula().valor()).isEqualTo("1713175071");
+        assertThat(guardada.getEstadoFinal()).isEqualTo(EstadoEvaluacion.APROBADO);
+    }
+
+    @Test
+    @Transactional
+    void buscarPorId_retorna_evaluacion_persistida() {
+        var evaluacion = evaluacionValida();
+        repository.guardar(evaluacion);
+
+        var encontrada = repository.buscarPorId(evaluacion.getId());
+
+        assertThat(encontrada).isPresent();
+        assertThat(encontrada.get().getCedula().valor()).isEqualTo("1713175071");
+        assertThat(encontrada.get().getScoreRiesgo().valor()).isEqualTo(85);
+    }
+
+    @Test
+    @Transactional
+    void buscarPorId_retorna_empty_para_id_inexistente() {
+        var resultado = repository.buscarPorId(UUID.randomUUID());
+        assertThat(resultado).isEmpty();
+    }
+
+    @Test
+    @Transactional
+    void listarTodas_retorna_evaluaciones_paginadas() {
+        // Guardar 3 evaluaciones
+        for (int i = 0; i < 3; i++) {
+            repository.guardar(evaluacionValida());
+        }
+
+        var lista = repository.listarTodas(0, 10);
+        assertThat(lista).hasSizeGreaterThanOrEqualTo(3);
+    }
+
+    @Test
+    @Transactional
+    void evaluacion_rechazada_se_persiste_con_estado_correcto() {
+        var evaluacion = EvaluacionCredito.builder()
+                .cedula(new Cedula("1713175071"))
+                .montoSolicitado(Dinero.usd(new BigDecimal("10000.00")))
+                .plazoAnios(2)
+                .salario(Dinero.usd(new BigDecimal("1000.00")))
+                .scoreRiesgo(new ScoreRiesgo(45))
+                .deudaMensual(Dinero.usd(new BigDecimal("400.00")))
+                .estadoFinal(EstadoEvaluacion.RECHAZADO)
+                .evaluadoPorId(UUID.randomUUID())
+                .build();
+
+        repository.guardar(evaluacion);
+        var encontrada = repository.buscarPorId(evaluacion.getId());
+
+        assertThat(encontrada).isPresent();
+        assertThat(encontrada.get().getEstadoFinal()).isEqualTo(EstadoEvaluacion.RECHAZADO);
+    }
+}
+```
+
+### Ejecutar
+
+```bash
+cd ms-credit-evaluation
+# Requiere Docker para DevServices (levanta PostgreSQL automáticamente)
+mvn test -pl infrastructure/driven-adapters/postgres
+```
+
+---
+
 ## Estado esperado al finalizar
 - [ ] Flyway aplica `V1__create_credit_evaluations.sql` al arrancar
 - [ ] Tabla `credit_evaluations` creada con todos los campos e índices
 - [ ] ENUM `estado_evaluacion` creado en PostgreSQL
 - [ ] `CreditEvaluationRepositoryAdapter` implementa `EvaluacionCreditoRepository`
 - [ ] El servicio arranca sin errores en modo dev
+- [ ] `CreditEvaluationRepositoryIT` pasa: guardar, buscar, listar, rechazada

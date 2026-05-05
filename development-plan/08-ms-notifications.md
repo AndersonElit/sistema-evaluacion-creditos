@@ -377,6 +377,349 @@ psql -h localhost -p 5434 -U postgres -d notifications_db \
 # El consumer debe ignorarlo y no crear un segundo registro
 ```
 
+---
+
+## Pruebas
+
+### Dependencias — `ms-notifications/pom.xml` (raíz)
+
+```xml
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-junit5</artifactId>
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>org.mockito</groupId>
+    <artifactId>mockito-core</artifactId>
+    <version>5.11.0</version>
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>org.mockito</groupId>
+    <artifactId>mockito-junit-jupiter</artifactId>
+    <version>5.11.0</version>
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>org.assertj</groupId>
+    <artifactId>assertj-core</artifactId>
+    <version>3.25.3</version>
+    <scope>test</scope>
+</dependency>
+<!-- DevServices PostgreSQL para integration tests -->
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-devservices-postgresql</artifactId>
+    <scope>test</scope>
+</dependency>
+```
+
+### Pruebas Unitarias — `EmailSenderServiceTest.java`
+
+Ubicación: `infrastructure/driven-adapters/postgres/src/test/java/com/msnotifications/postgres/`
+
+```java
+package com.msnotifications.postgres;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.*;
+import org.mockito.junit.jupiter.MockitoExtension;
+import software.amazon.awssdk.services.ses.SesClient;
+import software.amazon.awssdk.services.ses.model.*;
+
+import java.math.BigDecimal;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class EmailSenderServiceTest {
+
+    @Mock
+    SesClient sesClient;
+
+    @InjectMocks
+    EmailSenderService emailSender;
+
+    @Test
+    void enviar_APROBADO_usa_asunto_con_APROBADA() {
+        when(sesClient.sendEmail(any(SendEmailRequest.class)))
+                .thenReturn(SendEmailResponse.builder().messageId("ses-001").build());
+
+        emailSender.enviar("dest@email.com", "APROBADO",
+                new BigDecimal("5000.00"), "2026-05-05T14:30:00Z");
+
+        var captor = ArgumentCaptor.forClass(SendEmailRequest.class);
+        verify(sesClient).sendEmail(captor.capture());
+
+        var asunto = captor.getValue().message().subject().data();
+        assertThat(asunto).containsIgnoringCase("APROBADA");
+        assertThat(captor.getValue().destination().toAddresses())
+                .containsExactly("dest@email.com");
+    }
+
+    @Test
+    void enviar_RECHAZADO_usa_asunto_con_RECHAZADA() {
+        when(sesClient.sendEmail(any(SendEmailRequest.class)))
+                .thenReturn(SendEmailResponse.builder().messageId("ses-002").build());
+
+        emailSender.enviar("dest@email.com", "RECHAZADO",
+                new BigDecimal("3000.00"), "2026-05-05T14:30:00Z");
+
+        var captor = ArgumentCaptor.forClass(SendEmailRequest.class);
+        verify(sesClient).sendEmail(captor.capture());
+        assertThat(captor.getValue().message().subject().data())
+                .containsIgnoringCase("RECHAZADA");
+    }
+
+    @Test
+    void enviar_llama_a_ses_exactamente_una_vez() {
+        when(sesClient.sendEmail(any(SendEmailRequest.class)))
+                .thenReturn(SendEmailResponse.builder().messageId("ses-003").build());
+
+        emailSender.enviar("a@b.com", "APROBADO", BigDecimal.ONE, "2026-05-05T00:00:00Z");
+
+        verify(sesClient, times(1)).sendEmail(any(SendEmailRequest.class));
+    }
+
+    @Test
+    void fallo_de_ses_propaga_excepcion() {
+        when(sesClient.sendEmail(any(SendEmailRequest.class)))
+                .thenThrow(SesException.builder().message("SES error").build());
+
+        assertThatException()
+                .isThrownBy(() -> emailSender.enviar(
+                        "dest@email.com", "APROBADO",
+                        BigDecimal.ONE, "2026-05-05T00:00:00Z"));
+    }
+
+    @Test
+    void cuerpo_html_APROBADO_contiene_monto() {
+        when(sesClient.sendEmail(any(SendEmailRequest.class)))
+                .thenReturn(SendEmailResponse.builder().messageId("ses-004").build());
+
+        emailSender.enviar("dest@email.com", "APROBADO",
+                new BigDecimal("7500.00"), "2026-05-05T14:30:00Z");
+
+        var captor = ArgumentCaptor.forClass(SendEmailRequest.class);
+        verify(sesClient).sendEmail(captor.capture());
+        var html = captor.getValue().message().body().html().data();
+        assertThat(html).contains("7,500.00");
+    }
+}
+```
+
+### Prueba de Integración — `NotificationConsumerIT.java`
+
+> `@QuarkusTest` con DevServices PostgreSQL. SQS se inyecta como mock CDI
+> para controlar los mensajes que recibe el consumer sin LocalStack.
+
+Ubicación: `infrastructure/entry-points/sqs-consumer/src/test/java/com/msnotifications/sqsconsumer/`
+
+```java
+package com.msnotifications.sqsconsumer;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.msnotifications.postgres.EmailSenderService;
+import com.msnotifications.postgres.NotificationEntity;
+import io.quarkus.test.InjectMock;
+import io.quarkus.test.junit.QuarkusTest;
+import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.*;
+
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
+
+@QuarkusTest
+class NotificationConsumerIT {
+
+    @Inject
+    NotificationConsumer consumer;
+
+    @InjectMock
+    SqsClient sqsClient;
+
+    @InjectMock
+    EmailSenderService emailSender;
+
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    private static final String EVAL_ID = UUID.randomUUID().toString();
+
+    private Message mensajeValido(String evaluacionId) throws Exception {
+        var evento = mapper.writeValueAsString(java.util.Map.of(
+                "evaluacionId",     evaluacionId,
+                "cedula",           "1713175071",
+                "destinatarioEmail","test@email.com",
+                "estadoFinal",      "APROBADO",
+                "montoSolicitado",  new BigDecimal("5000.00"),
+                "moneda",           "USD",
+                "plazoAnios",       3,
+                "fechaEvaluacion",  "2026-05-05T14:30:00Z",
+                "version",          "1.0"
+        ));
+        return Message.builder()
+                .messageId(UUID.randomUUID().toString())
+                .receiptHandle("rh-" + evaluacionId)
+                .body(evento)
+                .build();
+    }
+
+    @BeforeEach
+    void setUp() {
+        doNothing().when(sqsClient).deleteMessage(any(DeleteMessageRequest.class));
+    }
+
+    // ── Happy path ────────────────────────────────────────────
+
+    @Test
+    @Transactional
+    void procesar_mensaje_valido_guarda_notificacion_ENVIADO() throws Exception {
+        var evalId = UUID.randomUUID().toString();
+        var msg = mensajeValido(evalId);
+
+        when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
+                .thenReturn(ReceiveMessageResponse.builder().messages(List.of(msg)).build());
+
+        doNothing().when(emailSender).enviar(any(), any(), any(), any());
+
+        consumer.procesarMensajes();
+
+        var count = NotificationEntity.count("evaluacionId = ?1 AND estado = ?2",
+                UUID.fromString(evalId), NotificationEntity.EstadoNotif.ENVIADO);
+        assertThat(count).isEqualTo(1L);
+    }
+
+    @Test
+    @Transactional
+    void procesar_mensaje_envia_email_exactamente_una_vez() throws Exception {
+        var msg = mensajeValido(UUID.randomUUID().toString());
+
+        when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
+                .thenReturn(ReceiveMessageResponse.builder().messages(List.of(msg)).build());
+        doNothing().when(emailSender).enviar(any(), any(), any(), any());
+
+        consumer.procesarMensajes();
+
+        verify(emailSender, times(1)).enviar(
+                eq("test@email.com"), eq("APROBADO"), any(), any());
+    }
+
+    @Test
+    @Transactional
+    void procesar_elimina_mensaje_de_sqs_tras_exito() throws Exception {
+        var msg = mensajeValido(UUID.randomUUID().toString());
+
+        when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
+                .thenReturn(ReceiveMessageResponse.builder().messages(List.of(msg)).build());
+        doNothing().when(emailSender).enviar(any(), any(), any(), any());
+
+        consumer.procesarMensajes();
+
+        verify(sqsClient, times(1)).deleteMessage(any(DeleteMessageRequest.class));
+    }
+
+    // ── Idempotencia ──────────────────────────────────────────
+
+    @Test
+    @Transactional
+    void mensaje_duplicado_no_genera_segundo_email_ni_fila() throws Exception {
+        var evalId = UUID.randomUUID().toString();
+        var msg = mensajeValido(evalId);
+
+        when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
+                .thenReturn(ReceiveMessageResponse.builder().messages(List.of(msg)).build());
+        doNothing().when(emailSender).enviar(any(), any(), any(), any());
+
+        // Primera ejecución: procesa
+        consumer.procesarMensajes();
+        // Segunda ejecución: mismo mensaje (SQS at-least-once)
+        consumer.procesarMensajes();
+
+        verify(emailSender, times(1)).enviar(any(), any(), any(), any());
+
+        var count = NotificationEntity.count("evaluacionId = ?1",
+                UUID.fromString(evalId));
+        assertThat(count).isEqualTo(1L);
+    }
+
+    // ── Resiliencia ───────────────────────────────────────────
+
+    @Test
+    void mensaje_malformado_no_elimina_mensaje_de_sqs() {
+        var msgMalformado = Message.builder()
+                .messageId("bad-msg")
+                .receiptHandle("rh-bad")
+                .body("{ esto no es json valido }")
+                .build();
+
+        when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
+                .thenReturn(ReceiveMessageResponse.builder()
+                        .messages(List.of(msgMalformado)).build());
+
+        // No debe lanzar excepción al procesarMensajes
+        assertThatNoException().isThrownBy(() -> consumer.procesarMensajes());
+
+        // El mensaje no se elimina: SQS lo reintentará
+        verify(sqsClient, never()).deleteMessage(any(DeleteMessageRequest.class));
+    }
+
+    @Test
+    void fallo_de_ses_no_elimina_mensaje_de_sqs() throws Exception {
+        var msg = mensajeValido(UUID.randomUUID().toString());
+
+        when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
+                .thenReturn(ReceiveMessageResponse.builder().messages(List.of(msg)).build());
+        doThrow(new RuntimeException("SES unavailable"))
+                .when(emailSender).enviar(any(), any(), any(), any());
+
+        assertThatNoException().isThrownBy(() -> consumer.procesarMensajes());
+
+        // Mensaje NO se elimina → SQS reintentará hasta maxReceiveCount → DLQ
+        verify(sqsClient, never()).deleteMessage(any(DeleteMessageRequest.class));
+    }
+
+    @Test
+    void cola_vacia_no_llama_a_emailSender() {
+        when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
+                .thenReturn(ReceiveMessageResponse.builder().messages(List.of()).build());
+
+        consumer.procesarMensajes();
+
+        verifyNoInteractions(emailSender);
+    }
+}
+```
+
+### Ejecutar
+
+```bash
+cd ms-notifications
+
+# Unitarios (sin Docker)
+mvn test -pl infrastructure/driven-adapters/postgres
+
+# Integración (requiere Docker para DevServices PostgreSQL)
+mvn test -pl infrastructure/entry-points/sqs-consumer
+
+# Todos
+mvn test
+```
+
+---
+
 ## Estado esperado al finalizar
 - [ ] Flyway aplica `V1__create_notifications.sql` en `notifications_db`
 - [ ] `@Scheduled(every="20s")` consumer activo y visible en logs
@@ -384,3 +727,5 @@ psql -h localhost -p 5434 -U postgres -d notifications_db \
 - [ ] Email "enviado" vía LocalStack SES (log de confirmación)
 - [ ] Mensaje duplicado ignorado (idempotencia por `evaluacion_id`)
 - [ ] Mensaje malformado no procesado, permanece en cola para reintento
+- [ ] `EmailSenderServiceTest` pasa: 5+ tests unitarios con SES mock
+- [ ] `NotificationConsumerIT` pasa: happy path, idempotencia, fallo SES, cola vacía

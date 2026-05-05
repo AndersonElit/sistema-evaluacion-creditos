@@ -259,6 +259,317 @@ mvn compile -pl domain/model,application/use-cases
 # BUILD SUCCESS sin errores
 ```
 
+---
+
+## Pruebas Unitarias del Dominio
+
+> El dominio no tiene dependencias de infraestructura: los tests son JUnit puro, sin Quarkus ni Mockito.
+
+### Dependencias — `domain/model/pom.xml`
+
+```xml
+<dependency>
+    <groupId>org.junit.jupiter</groupId>
+    <artifactId>junit-jupiter</artifactId>
+    <version>5.10.2</version>
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>org.assertj</groupId>
+    <artifactId>assertj-core</artifactId>
+    <version>3.25.3</version>
+    <scope>test</scope>
+</dependency>
+```
+
+### `CedulaTest.java`
+
+Ubicación: `domain/model/src/test/java/com/mscreditevaluation/model/`
+
+```java
+package com.mscreditevaluation.model;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import static org.assertj.core.api.Assertions.*;
+
+class CedulaTest {
+
+    // ── Válidas ───────────────────────────────────────────────
+
+    @ParameterizedTest
+    @ValueSource(strings = {"1713175071", "0912345678"})
+    void cedulas_validas_son_aceptadas(String valor) {
+        assertThatNoException().isThrownBy(() -> new Cedula(valor));
+    }
+
+    @Test
+    void valor_es_accesible_tras_construccion() {
+        assertThat(new Cedula("1713175071").valor()).isEqualTo("1713175071");
+    }
+
+    // ── Formato ───────────────────────────────────────────────
+
+    @Test
+    void cedula_nula_lanza_excepcion() {
+        assertThatIllegalArgumentException().isThrownBy(() -> new Cedula(null));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"123456789", "17131750711", "ABCDEFGHIJ", "1713 75071", ""})
+    void formato_invalido_es_rechazado(String valor) {
+        assertThatIllegalArgumentException().isThrownBy(() -> new Cedula(valor));
+    }
+
+    // ── Provincia ─────────────────────────────────────────────
+
+    @Test
+    void provincia_00_es_rechazada() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new Cedula("0013175071"))
+                .withMessageContaining("provincia");
+    }
+
+    @Test
+    void provincia_25_es_rechazada() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new Cedula("2500000000"))
+                .withMessageContaining("provincia");
+    }
+
+    // ── Módulo 10 ─────────────────────────────────────────────
+
+    @ParameterizedTest
+    @ValueSource(strings = {"1234567890", "1713175072", "9999999999"})
+    void digito_verificador_incorrecto_es_rechazado(String valor) {
+        assertThatIllegalArgumentException().isThrownBy(() -> new Cedula(valor));
+    }
+
+    // ── Seguridad: inyección SQL rechazada a nivel de dominio ──
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "1' OR '1'='1",
+        "'; DROP TABLE t;--",
+        "<script>alert(1)</script>",
+        "${7*7}"
+    })
+    void payloads_inyeccion_son_rechazados(String payload) {
+        assertThatIllegalArgumentException().isThrownBy(() -> new Cedula(payload));
+    }
+}
+```
+
+### `DineroTest.java`
+
+```java
+package com.mscreditevaluation.model;
+
+import org.junit.jupiter.api.Test;
+import java.math.BigDecimal;
+
+import static org.assertj.core.api.Assertions.*;
+
+class DineroTest {
+
+    @Test
+    void monto_positivo_minimo_es_aceptado() {
+        assertThatNoException().isThrownBy(() -> Dinero.usd(new BigDecimal("0.01")));
+    }
+
+    @Test
+    void monto_cero_es_rechazado() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> Dinero.usd(BigDecimal.ZERO))
+                .withMessageContaining("positivo");
+    }
+
+    @Test
+    void monto_negativo_es_rechazado() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> Dinero.usd(new BigDecimal("-1")));
+    }
+
+    @Test
+    void monto_nulo_es_rechazado() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new Dinero(null, "USD"));
+    }
+
+    @Test
+    void moneda_vacia_es_rechazada() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new Dinero(new BigDecimal("100"), ""));
+    }
+
+    @Test
+    void sumar_retorna_suma_correcta() {
+        var resultado = Dinero.usd(new BigDecimal("100.00"))
+                .sumar(Dinero.usd(new BigDecimal("50.50")));
+        assertThat(resultado.cantidad()).isEqualByComparingTo("150.50");
+    }
+
+    @Test
+    void menorQue_es_correcto() {
+        var menor = Dinero.usd(new BigDecimal("99"));
+        var mayor = Dinero.usd(new BigDecimal("100"));
+        assertThat(menor.menorQue(mayor)).isTrue();
+        assertThat(mayor.menorQue(menor)).isFalse();
+    }
+}
+```
+
+### `ScoreRiesgoTest.java`
+
+```java
+package com.mscreditevaluation.model;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import static org.assertj.core.api.Assertions.*;
+
+class ScoreRiesgoTest {
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 70, 71, 99, 100})
+    void scores_en_rango_son_aceptados(int valor) {
+        assertThatNoException().isThrownBy(() -> new ScoreRiesgo(valor));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {-1, 101, Integer.MAX_VALUE})
+    void scores_fuera_de_rango_son_rechazados(int valor) {
+        assertThatIllegalArgumentException().isThrownBy(() -> new ScoreRiesgo(valor));
+    }
+
+    @Test
+    void score_71_es_suficiente() {
+        assertThat(new ScoreRiesgo(71).esSuficiente()).isTrue();
+    }
+
+    @Test
+    void score_70_NO_es_suficiente_limite_estricto() {
+        // La regla es score > 70 (estricto, no >=)
+        assertThat(new ScoreRiesgo(70).esSuficiente()).isFalse();
+    }
+
+    @Test
+    void score_0_no_es_suficiente() {
+        assertThat(new ScoreRiesgo(0).esSuficiente()).isFalse();
+    }
+
+    @Test
+    void score_100_es_suficiente() {
+        assertThat(new ScoreRiesgo(100).esSuficiente()).isTrue();
+    }
+}
+```
+
+### `EvaluacionCreditoTest.java` — Regla de Negocio
+
+```java
+package com.mscreditevaluation.model;
+
+import org.junit.jupiter.api.Test;
+import java.math.BigDecimal;
+
+import static org.assertj.core.api.Assertions.*;
+
+class EvaluacionCreditoTest {
+
+    private static final Dinero SALARIO_2000  = Dinero.usd(new BigDecimal("2000.00"));
+    private static final Dinero MONTO_5000    = Dinero.usd(new BigDecimal("5000.00"));
+    private static final Dinero DEUDA_200     = Dinero.usd(new BigDecimal("200.00"));
+    private static final Dinero DEUDA_MINIMA  = Dinero.usd(new BigDecimal("0.01"));
+
+    // cuota = 5000 / (3*12) ≈ 138.89
+    // carga = 200 + 138.89 = 338.89 < salario*0.40 = 800 → APROBADO si score > 70
+
+    @Test
+    void aprobado_score_alto_deuda_baja() {
+        // BDD: score 85, deuda 200, salario 2000, monto 5000, plazo 3 → APROBADO
+        var estado = EvaluacionCredito.evaluar(
+                new ScoreRiesgo(85), DEUDA_200, SALARIO_2000, MONTO_5000, 3);
+        assertThat(estado).isEqualTo(EstadoEvaluacion.APROBADO);
+    }
+
+    @Test
+    void rechazado_score_igual_70_limite_estricto() {
+        // BDD: score = 70 → RECHAZADO (regla > 70, no >=)
+        var estado = EvaluacionCredito.evaluar(
+                new ScoreRiesgo(70), DEUDA_200, SALARIO_2000, MONTO_5000, 3);
+        assertThat(estado).isEqualTo(EstadoEvaluacion.RECHAZADO);
+    }
+
+    @Test
+    void rechazado_score_menor_70() {
+        var estado = EvaluacionCredito.evaluar(
+                new ScoreRiesgo(45), DEUDA_200, SALARIO_2000, MONTO_5000, 3);
+        assertThat(estado).isEqualTo(EstadoEvaluacion.RECHAZADO);
+    }
+
+    @Test
+    void rechazado_carga_supera_40_porciento_aunque_score_sea_alto() {
+        // salario 1000 → límite 400; monto 10000/(2*12)≈416 + deuda 300 = 716 > 400
+        var salarioBajo = Dinero.usd(new BigDecimal("1000.00"));
+        var montoAlto   = Dinero.usd(new BigDecimal("10000.00"));
+        var deudaAlta   = Dinero.usd(new BigDecimal("300.00"));
+        var estado = EvaluacionCredito.evaluar(
+                new ScoreRiesgo(90), deudaAlta, salarioBajo, montoAlto, 2);
+        assertThat(estado).isEqualTo(EstadoEvaluacion.RECHAZADO);
+    }
+
+    @Test
+    void aprobado_en_limite_exacto_score_71_deuda_minima() {
+        // BDD: score 71, monto 1000, salario 2000, plazo 1, deuda ≈0 → APROBADO
+        var monto1000 = Dinero.usd(new BigDecimal("1000.00"));
+        var estado = EvaluacionCredito.evaluar(
+                new ScoreRiesgo(71), DEUDA_MINIMA, SALARIO_2000, monto1000, 1);
+        assertThat(estado).isEqualTo(EstadoEvaluacion.APROBADO);
+    }
+
+    @Test
+    void builder_genera_id_unico_por_instancia() {
+        var e1 = EvaluacionCredito.builder()
+                .cedula(new Cedula("1713175071")).montoSolicitado(MONTO_5000)
+                .plazoAnios(3).salario(SALARIO_2000)
+                .scoreRiesgo(new ScoreRiesgo(85)).deudaMensual(DEUDA_200)
+                .estadoFinal(EstadoEvaluacion.APROBADO).build();
+        var e2 = EvaluacionCredito.builder()
+                .cedula(new Cedula("1713175071")).montoSolicitado(MONTO_5000)
+                .plazoAnios(3).salario(SALARIO_2000)
+                .scoreRiesgo(new ScoreRiesgo(85)).deudaMensual(DEUDA_200)
+                .estadoFinal(EstadoEvaluacion.APROBADO).build();
+
+        assertThat(e1.getId()).isNotEqualTo(e2.getId());
+    }
+
+    @Test
+    void builder_asigna_fecha_de_evaluacion_automaticamente() {
+        var e = EvaluacionCredito.builder()
+                .cedula(new Cedula("1713175071")).montoSolicitado(MONTO_5000)
+                .plazoAnios(3).salario(SALARIO_2000)
+                .scoreRiesgo(new ScoreRiesgo(80)).deudaMensual(DEUDA_200)
+                .estadoFinal(EstadoEvaluacion.APROBADO).build();
+        assertThat(e.getFechaEvaluacion()).isNotNull();
+    }
+}
+```
+
+### Ejecutar tests del dominio
+
+```bash
+cd ms-credit-evaluation
+mvn test -pl domain/model
+# Resultado esperado: BUILD SUCCESS — 20+ tests en verde
+```
+
+---
+
 ## Estado esperado al finalizar
 - [ ] Scaffold `ms-credit-evaluation` generado con módulo sqs-producer
 - [ ] `Cedula` valida Módulo 10 ecuatoriano con invariantes en el constructor
@@ -267,3 +578,4 @@ mvn compile -pl domain/model,application/use-cases
 - [ ] `EvaluacionCredito.evaluar()` implementa regla: score > 70 AND carga < salario × 0.40
 - [ ] Tres puertos definidos: Repository, RiskService, Notification
 - [ ] Módulos `domain/model` y `application/use-cases` compilan sin errores
+- [ ] `mvn test -pl domain/model` pasa con 20+ tests en verde

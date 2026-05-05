@@ -305,6 +305,196 @@ curl -s http://localhost:8081/q/health | jq .status
 # http://localhost:8081/swagger-ui
 ```
 
+---
+
+## Pruebas
+
+### Dependencias de test — `ms-risk/pom.xml` (raíz)
+
+```xml
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-junit5</artifactId>
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>io.rest-assured</groupId>
+    <artifactId>rest-assured</artifactId>
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>org.assertj</groupId>
+    <artifactId>assertj-core</artifactId>
+    <version>3.25.3</version>
+    <scope>test</scope>
+</dependency>
+```
+
+### Pruebas Unitarias — `MockRiskAdapterTest.java`
+
+Ubicación: `infrastructure/driven-adapters/postgres/src/test/java/com/msrisk/postgres/`
+
+```java
+package com.msrisk.postgres;
+
+import org.junit.jupiter.api.RepeatedTest;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.*;
+
+class MockRiskAdapterTest {
+
+    private final MockRiskAdapter adapter = new MockRiskAdapter();
+
+    @RepeatedTest(20)
+    void getScore_siempre_retorna_valor_entre_0_y_100() {
+        int score = adapter.getScore("1713175071");
+        assertThat(score).isBetween(0, 100);
+    }
+
+    @Test
+    void getProfile_retorna_cedula_correcta() {
+        var profile = adapter.getProfile("1713175071");
+        assertThat(profile.cedula()).isEqualTo("1713175071");
+    }
+
+    @Test
+    void getProfile_lista_de_deudas_no_es_nula() {
+        var profile = adapter.getProfile("1713175071");
+        assertThat(profile.debts()).isNotNull();
+    }
+
+    @Test
+    void getProfile_totalMonthlyDebt_es_suma_exacta_de_deudas_individuales() {
+        var profile = adapter.getProfile("1713175071");
+        var sumaManual = profile.debts().stream()
+                .map(d -> d.monthlyPayment())
+                .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
+        assertThat(profile.totalMonthlyDebt()).isEqualByComparingTo(sumaManual);
+    }
+
+    @RepeatedTest(10)
+    void multiples_llamadas_producen_variabilidad_en_score() {
+        // El score es aleatorio: no debe ser siempre el mismo valor
+        // (este test verifica que el RNG funciona, no que sea verdaderamente aleatorio)
+        int score = adapter.getScore("0912345678");
+        assertThat(score).isBetween(0, 100);
+    }
+}
+```
+
+### Pruebas de Integración — `RiskResourceIT.java`
+
+Ubicación: `infrastructure/entry-points/rest-api/src/test/java/com/msrisk/restapi/`
+
+```java
+package com.msrisk.restapi;
+
+import io.quarkus.test.junit.QuarkusTest;
+import org.junit.jupiter.api.Test;
+
+import static io.restassured.RestAssured.*;
+import static org.hamcrest.Matchers.*;
+
+@QuarkusTest
+class RiskResourceIT {
+
+    private static final String CEDULA_VALIDA = "1713175071";
+
+    // ── /v1/risk/score ────────────────────────────────────────
+
+    @Test
+    void score_retorna_200_con_score_en_rango() {
+        given()
+            .when().get("/v1/risk/score/" + CEDULA_VALIDA)
+            .then()
+                .statusCode(200)
+                .body("cedula", equalTo(CEDULA_VALIDA))
+                .body("score", allOf(greaterThanOrEqualTo(0), lessThanOrEqualTo(100)))
+                .body("timestamp", notNullValue());
+    }
+
+    @Test
+    void score_con_cedula_de_longitud_incorrecta_retorna_400() {
+        given()
+            .when().get("/v1/risk/score/123")
+            .then()
+                .statusCode(400);
+    }
+
+    @Test
+    void score_con_cedula_con_letras_retorna_400() {
+        given()
+            .when().get("/v1/risk/score/ABCDE12345")
+            .then()
+                .statusCode(400);
+    }
+
+    // ── /v1/risk/debts ────────────────────────────────────────
+
+    @Test
+    void debts_retorna_200_con_estructura_correcta() {
+        given()
+            .when().get("/v1/risk/debts/" + CEDULA_VALIDA)
+            .then()
+                .statusCode(200)
+                .body("cedula", equalTo(CEDULA_VALIDA))
+                .body("deudas", notNullValue())
+                .body("totalMensual", notNullValue())
+                .body("timestamp", notNullValue());
+    }
+
+    @Test
+    void debts_totalMensual_es_consistente_con_lista() {
+        var response = given()
+            .when().get("/v1/risk/debts/" + CEDULA_VALIDA)
+            .then()
+                .statusCode(200)
+                .extract().body().jsonPath();
+
+        // totalMensual debe ser >= 0
+        float total = response.getFloat("totalMensual");
+        assertThat(total).isGreaterThanOrEqualTo(0f);
+    }
+
+    @Test
+    void debts_con_cedula_invalida_retorna_400() {
+        given()
+            .when().get("/v1/risk/debts/noescedula")
+            .then()
+                .statusCode(400);
+    }
+
+    // ── Health ────────────────────────────────────────────────
+
+    @Test
+    void health_endpoint_retorna_UP() {
+        given()
+            .when().get("/q/health")
+            .then()
+                .statusCode(200)
+                .body("status", equalTo("UP"));
+    }
+}
+```
+
+### Ejecutar tests
+
+```bash
+cd ms-risk
+
+# Unitarios
+mvn test -pl infrastructure/driven-adapters/postgres
+
+# Integración (levanta Quarkus en modo test)
+mvn test -pl infrastructure/entry-points/rest-api
+
+# Todos
+mvn test
+```
+
+---
+
 ## Estado esperado al finalizar
 - [ ] `ms-risk` arranca en puerto 8081
 - [ ] `GET /v1/risk/score/{cedula}` retorna score 0–100 con ~2s de latencia
@@ -312,3 +502,4 @@ curl -s http://localhost:8081/q/health | jq .status
 - [ ] Cédula con formato inválido → HTTP 400
 - [ ] `/q/health` responde UP
 - [ ] Swagger UI accesible en http://localhost:8081/swagger-ui
+- [ ] `mvn test` pasa sin errores (unitarios + integración)

@@ -345,6 +345,318 @@ npm run dev
 # → Solo visible la lista, sin botón "Nueva Evaluación"
 ```
 
+---
+
+## Pruebas del Frontend
+
+### Dependencias de test
+
+```bash
+npm install --save-dev \
+  vitest \
+  @vitest/ui \
+  jsdom \
+  @testing-library/react \
+  @testing-library/user-event \
+  @testing-library/jest-dom \
+  msw
+```
+
+### `vite.config.ts` — configurar Vitest
+
+```typescript
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  server: { port: 3000 },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.ts'],
+  },
+});
+```
+
+### `src/test/setup.ts`
+
+```typescript
+import '@testing-library/jest-dom';
+```
+
+### Mock de Keycloak — `src/test/__mocks__/keycloak.ts`
+
+```typescript
+const keycloak = {
+  token: 'fake-jwt-token',
+  tokenParsed: {
+    email: 'analyst@banco.com',
+    groups: ['ANALYST'],
+    sub: '550e8400-e29b-41d4-a716-446655440000',
+  },
+  authenticated: true,
+  init: vi.fn().mockResolvedValue(true),
+  login: vi.fn(),
+  logout: vi.fn(),
+  updateToken: vi.fn().mockResolvedValue(true),
+  onTokenExpired: undefined,
+};
+
+export default keycloak;
+```
+
+### Mock del API — `src/test/mocks/handlers.ts` (MSW)
+
+```typescript
+import { http, HttpResponse } from 'msw';
+import { EvaluacionCredito } from '../../types';
+
+const evaluacionBase: EvaluacionCredito = {
+  id: '550e8400-e29b-41d4-a716-446655440001',
+  cedula: '1713175071',
+  montoSolicitado: 5000,
+  plazoAnios: 3,
+  salario: 2000,
+  scoreRiesgo: 85,
+  deudaMensualTotal: 200,
+  estadoFinal: 'APROBADO',
+  fechaEvaluacion: '2026-05-05T14:30:00Z',
+  evaluadoPorId: '550e8400-e29b-41d4-a716-446655440000',
+};
+
+export const handlers = [
+  http.get('http://localhost:8080/v1/credit-evaluations', () => {
+    return HttpResponse.json([evaluacionBase]);
+  }),
+
+  http.post('http://localhost:8080/v1/credit-evaluations', () => {
+    return HttpResponse.json(evaluacionBase, { status: 201 });
+  }),
+];
+
+export const handlersError = [
+  http.post('http://localhost:8080/v1/credit-evaluations', () => {
+    return HttpResponse.json(
+      { status: 422, error: 'cédula inválida' },
+      { status: 422 }
+    );
+  }),
+];
+```
+
+### `src/test/mocks/server.ts`
+
+```typescript
+import { setupServer } from 'msw/node';
+import { handlers } from './handlers';
+
+export const server = setupServer(...handlers);
+```
+
+### `src/test/setup.ts` — agregar MSW lifecycle
+
+```typescript
+import '@testing-library/jest-dom';
+import { server } from './mocks/server';
+
+beforeAll(() => server.listen());
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+```
+
+---
+
+### Pruebas Unitarias — `EvaluacionesList.test.tsx`
+
+Ubicación: `src/components/`
+
+```typescript
+import { render, screen } from '@testing-library/react';
+import EvaluacionesList from './EvaluacionesList';
+import { EvaluacionCredito } from '../types';
+
+const evaluaciones: EvaluacionCredito[] = [
+  {
+    id: 'id-001', cedula: '1713175071', montoSolicitado: 5000,
+    plazoAnios: 3, salario: 2000, scoreRiesgo: 85, deudaMensualTotal: 200,
+    estadoFinal: 'APROBADO', fechaEvaluacion: '2026-05-05T14:30:00Z',
+    evaluadoPorId: 'user-001',
+  },
+  {
+    id: 'id-002', cedula: '0912345678', montoSolicitado: 3000,
+    plazoAnios: 2, salario: 1500, scoreRiesgo: 45, deudaMensualTotal: 100,
+    estadoFinal: 'RECHAZADO', fechaEvaluacion: '2026-05-05T15:00:00Z',
+    evaluadoPorId: 'user-001',
+  },
+];
+
+describe('EvaluacionesList', () => {
+  test('muestra mensaje cuando no hay evaluaciones', () => {
+    render(<EvaluacionesList evaluaciones={[]} />);
+    expect(screen.getByText(/no hay evaluaciones/i)).toBeInTheDocument();
+  });
+
+  test('renderiza todas las evaluaciones recibidas', () => {
+    render(<EvaluacionesList evaluaciones={evaluaciones} />);
+    expect(screen.getByText('1713175071')).toBeInTheDocument();
+    expect(screen.getByText('0912345678')).toBeInTheDocument();
+  });
+
+  test('muestra APROBADO y RECHAZADO con estilos distintos', () => {
+    render(<EvaluacionesList evaluaciones={evaluaciones} />);
+    expect(screen.getByText('APROBADO')).toBeInTheDocument();
+    expect(screen.getByText('RECHAZADO')).toBeInTheDocument();
+  });
+
+  test('muestra el monto formateado', () => {
+    render(<EvaluacionesList evaluaciones={evaluaciones} />);
+    expect(screen.getByText('$5000.00')).toBeInTheDocument();
+  });
+});
+```
+
+### Pruebas Unitarias — `CreditForm.test.tsx`
+
+```typescript
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { server } from '../test/mocks/server';
+import { handlersError } from '../test/mocks/handlers';
+import CreditForm from './CreditForm';
+
+describe('CreditForm', () => {
+  test('renderiza todos los campos del formulario', () => {
+    render(<CreditForm onEvaluacionCreada={vi.fn()} />);
+    expect(screen.getByLabelText(/cédula/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/monto/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/plazo/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/salario/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /evaluar/i })).toBeInTheDocument();
+  });
+
+  test('submitting el formulario llama a onEvaluacionCreada con la respuesta', async () => {
+    const onCreada = vi.fn();
+    render(<CreditForm onEvaluacionCreada={onCreada} />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText(/cédula/i), '1713175071');
+    await user.type(screen.getByLabelText(/monto/i), '5000');
+    await user.clear(screen.getByLabelText(/plazo/i));
+    await user.type(screen.getByLabelText(/plazo/i), '3');
+    await user.type(screen.getByLabelText(/salario/i), '2000');
+    await user.click(screen.getByRole('button', { name: /evaluar/i }));
+
+    await waitFor(() => {
+      expect(onCreada).toHaveBeenCalledWith(
+        expect.objectContaining({ estadoFinal: 'APROBADO' })
+      );
+    });
+  });
+
+  test('muestra error cuando el API retorna 422', async () => {
+    server.use(...handlersError);
+    render(<CreditForm onEvaluacionCreada={vi.fn()} />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText(/cédula/i), '1234567890');
+    await user.type(screen.getByLabelText(/monto/i), '5000');
+    await user.type(screen.getByLabelText(/salario/i), '2000');
+    await user.click(screen.getByRole('button', { name: /evaluar/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/cédula inválida/i)).toBeInTheDocument();
+    });
+  });
+
+  test('botón queda deshabilitado mientras se evalúa', async () => {
+    render(<CreditForm onEvaluacionCreada={vi.fn()} />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText(/cédula/i), '1713175071');
+    await user.type(screen.getByLabelText(/monto/i), '5000');
+    await user.type(screen.getByLabelText(/salario/i), '2000');
+    await user.click(screen.getByRole('button', { name: /evaluar/i }));
+
+    expect(screen.getByRole('button', { name: /evaluando/i })).toBeDisabled();
+  });
+});
+```
+
+### Prueba de Integración — `App.test.tsx`
+
+```typescript
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import App from './App';
+import keycloak from './keycloak';
+
+// Usar el mock de keycloak definido en __mocks__
+vi.mock('./keycloak');
+
+describe('App — integración', () => {
+  test('muestra el email del usuario autenticado', () => {
+    render(<App keycloak={keycloak as any} />);
+    expect(screen.getByText(/analyst@banco\.com/i)).toBeInTheDocument();
+  });
+
+  test('ANALYST ve el botón Nueva Evaluación', () => {
+    render(<App keycloak={keycloak as any} />);
+    expect(screen.getByRole('button', { name: /nueva evaluación/i }))
+        .toBeInTheDocument();
+  });
+
+  test('VIEWER no ve el botón Nueva Evaluación', () => {
+    (keycloak.tokenParsed as any).groups = ['VIEWER'];
+    render(<App keycloak={keycloak as any} />);
+    expect(screen.queryByRole('button', { name: /nueva evaluación/i }))
+        .not.toBeInTheDocument();
+    // Restaurar
+    (keycloak.tokenParsed as any).groups = ['ANALYST'];
+  });
+
+  test('lista de evaluaciones se carga al montar', async () => {
+    render(<App keycloak={keycloak as any} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: /ver evaluaciones/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('1713175071')).toBeInTheDocument();
+    });
+  });
+
+  test('logout llama a keycloak.logout', async () => {
+    render(<App keycloak={keycloak as any} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: /cerrar sesión/i }));
+
+    expect(keycloak.logout).toHaveBeenCalledTimes(1);
+  });
+});
+```
+
+### Ejecutar tests del Frontend
+
+```bash
+cd frontend
+
+# Todos los tests
+npx vitest run
+
+# Watch mode (durante desarrollo)
+npx vitest
+
+# Con UI interactiva
+npx vitest --ui
+
+# Cobertura
+npx vitest run --coverage
+```
+
+---
+
 ## Estado esperado al finalizar
 - [ ] Frontend arranca en http://localhost:3000
 - [ ] Login redirige a Keycloak (Authorization Code + PKCE)
@@ -354,3 +666,4 @@ npm run dev
 - [ ] VIEWER no ve el formulario de nueva evaluación
 - [ ] Token se renueva automáticamente antes de expirar
 - [ ] Logout funciona correctamente
+- [ ] `npx vitest run` pasa: unitarios de componentes + integración de App
