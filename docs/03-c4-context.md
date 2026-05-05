@@ -6,42 +6,34 @@ El diagrama de contexto muestra el sistema de evaluación de créditos como una 
 
 ---
 
-## Diagrama C4 Context (PlantUML)
+## Diagrama C4 Context (Mermaid)
 
-```plantuml
-@startuml C4_Context_CreditEvaluation
-!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+```mermaid
+C4Context
+  title Diagrama de Contexto — Sistema de Evaluación de Créditos
 
-LAYOUT_WITH_LEGEND()
+  Person(analista, "Analista de Crédito", "Usuario con rol ANALYST. Envía solicitudes y consulta resultados.")
+  Person(administrador, "Administrador", "Usuario con rol ADMIN. Gestiona usuarios, roles y configuración.")
+  Person_Ext(solicitante, "Solicitante de Crédito", "Ciudadano que solicita financiamiento. Recibe la respuesta por email.")
 
-title Diagrama de Contexto — Sistema de Evaluación de Créditos
+  System(auth_sistema, "Sistema de Identidad y Acceso", "Autentica usuarios, gestiona roles y emite tokens JWT. (MS-C :8082)")
+  System(sistema, "Sistema de Evaluación de Créditos", "Evalúa solicitudes de crédito, orquesta servicios de riesgo y notifica el resultado por email. (MS-A + MS-B)")
 
-' ── Actores (Personas) ──────────────────────────────────────
-Person(analista, "Analista de Crédito", "Usuario con rol ANALYST.\nEnvía solicitudes y consulta resultados.")
-Person(administrador, "Administrador", "Usuario con rol ADMIN.\nGestiona usuarios, roles y configuración.")
-Person(solicitante, "Solicitante de Crédito", "Ciudadano que solicita\nfinanciamiento. Recibe la\nrespuesta por email.")
+  System_Ext(aws_sqs, "AWS SQS", "Cola de mensajes gestionada. Desacopla la evaluación de la notificación al solicitante.")
+  System_Ext(aws_ses, "AWS SES", "Servicio de envío de email. Entrega los correos de aprobación o rechazo.")
 
-' ── Sistema Principal ────────────────────────────────────────
-System(sistema, "Sistema de Evaluación de Créditos", "Evalúa solicitudes de crédito,\norquesta servicios de riesgo y\nnotifica el resultado por email.")
-System(auth_sistema, "Sistema de Identidad y Acceso", "Autentica usuarios, gestiona\nroles y emite tokens JWT.")
+  Rel(analista, auth_sistema, "Inicia sesión", "HTTPS / REST")
+  Rel(administrador, auth_sistema, "Gestiona usuarios y roles", "HTTPS / REST")
+  Rel(analista, sistema, "Evalúa solicitudes (con JWT)", "HTTPS / REST")
+  Rel(administrador, sistema, "Consulta evaluaciones (con JWT)", "HTTPS / REST")
+  Rel(solicitante, sistema, "Recibe resultado de evaluación", "Email")
 
-' ── Sistemas Externos ────────────────────────────────────────
-System_Ext(aws_sqs, "AWS SQS", "Cola de mensajes gestionada.\nDesacopla la evaluación de la\nnotificación al solicitante.")
-System_Ext(aws_ses, "AWS SES", "Servicio de envío de email.\nEntrega los correos de\naprobación o rechazo.")
+  Rel(sistema, aws_sqs, "Publica eventos de evaluación completada", "AWS SDK / HTTPS")
+  Rel(aws_sqs, sistema, "Worker consume mensajes pendientes", "AWS SDK / Polling")
+  Rel(sistema, aws_ses, "Envía emails de resultado", "AWS SDK / HTTPS")
+  Rel(aws_ses, solicitante, "Entrega email al destinatario", "SMTP")
 
-' ── Relaciones ───────────────────────────────────────────────
-Rel(analista, auth_sistema, "Inicia sesión", "HTTPS / REST")
-Rel(administrador, auth_sistema, "Gestiona usuarios y roles", "HTTPS / REST")
-Rel(analista, sistema, "Evalúa solicitudes\n(con JWT de Auth)", "HTTPS / REST")
-Rel(administrador, sistema, "Consulta evaluaciones\n(con JWT de Auth)", "HTTPS / REST")
-Rel(solicitante, sistema, "Recibe resultado de\nevaluación", "Email")
-
-Rel(sistema, aws_sqs, "Publica eventos de evaluación\ncompletada", "AWS SDK / HTTPS")
-Rel(aws_sqs, sistema, "Worker consume mensajes\npendientes de notificación", "AWS SDK / Polling")
-Rel(sistema, aws_ses, "Envía emails de resultado\n(aprobado/rechazado)", "AWS SDK / SMTP")
-Rel(aws_ses, solicitante, "Entrega email al destinatario", "SMTP")
-
-@enduml
+  UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
 ```
 
 ---

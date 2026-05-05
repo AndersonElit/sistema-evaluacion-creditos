@@ -6,82 +6,44 @@ Descompone el sistema en sus contenedores de ejecución: aplicaciones, bases de 
 
 ---
 
-## Diagrama C4 Container (PlantUML)
+## Diagrama C4 Contenedores (Mermaid)
 
-```plantuml
-@startuml C4_Container_CreditEvaluation
-!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+```mermaid
+C4Container
+  title Diagrama de Contenedores — Sistema de Evaluación de Créditos
 
-LAYOUT_WITH_LEGEND()
+  Person(analista, "Analista / Admin", "Opera el sistema via navegador web.")
+  Person_Ext(solicitante, "Solicitante", "Recibe email con resultado.")
 
-title Diagrama de Contenedores — Sistema de Evaluación de Créditos
+  System_Boundary(auth_system, "Sistema de Identidad y Acceso") {
+    Container(auth_service, "Microservicio C — Auth", "Java 21 + Quarkus 3.x, SmallRye JWT Build", "Gestiona usuarios y roles. Emite JWT firmados con RS256. Expone clave pública RSA.")
+    ContainerDb(auth_db, "Base de Datos Auth", "PostgreSQL 16 (auth_db)", "Almacena usuarios, roles y tabla user_roles.")
+  }
 
-' ── Personas ────────────────────────────────────────────────
-Person(analista, "Analista / Admin", "Opera el sistema via\nnavegador web.")
-Person(solicitante, "Solicitante", "Recibe email con resultado.")
+  System_Boundary(credit_system, "Sistema de Evaluación de Créditos") {
+    Container(frontend, "Frontend SPA", "React 18 + TypeScript", "Interfaz web. Formulario de evaluación, lista de evaluaciones, pantalla de login.")
+    Container(orchestrator, "Microservicio A — Orquestador", "Java 21 + Quarkus 3.x", "Valida cédula (Módulo 10). Orquesta llamadas a Riesgos. Aplica reglas de negocio. Persiste evaluaciones. Publica eventos en SQS. Valida JWT con clave pública de MS-C.")
+    Container(risk_service, "Microservicio B — Riesgos Mock", "Java 21 + Quarkus 3.x", "Expone score aleatorio (0-100) y lista de deudas por cédula. Simula latencia de 2s y 1.5s.")
+    ContainerDb(credit_db, "Base de Datos Créditos", "PostgreSQL 16 (creditos_db)", "Almacena evaluaciones y notificaciones.")
+    Container(notif_worker, "Notification Worker", "Quarkus Scheduler (embebido en MS-A)", "Consume mensajes de SQS. Envía emails via AWS SES. Registra estado de envío.")
+  }
 
-' ── Boundary: Auth ──────────────────────────────────────────
-System_Boundary(auth_system, "Sistema de Identidad y Acceso") {
+  System_Ext(aws_sqs, "AWS SQS", "Cola: credit-evaluation-notifications. DLQ: credit-eval-notif-dlq.")
+  System_Ext(aws_ses, "AWS SES", "Envío de emails transaccionales.")
 
-  Container(auth_service, "Microservicio C — Auth", "Java 21 + Quarkus 3.x\nSmallRye JWT Build", "Gestiona usuarios y roles.\nEmite JWT firmados con RS256.\nExpone clave pública RSA.")
+  Rel(analista, frontend, "Usa", "HTTPS / Browser")
+  Rel(analista, auth_service, "Login / gestión usuarios", "HTTPS / REST")
+  Rel(auth_service, auth_db, "Persiste usuarios y roles", "JDBC / Hibernate Panache")
+  Rel(frontend, orchestrator, "API calls", "HTTPS / REST + Bearer JWT")
+  Rel(orchestrator, risk_service, "GET score y deudas (paralelo)", "HTTP REST")
+  Rel(orchestrator, credit_db, "Persiste evaluaciones y notificaciones", "JDBC / Hibernate Panache")
+  Rel(orchestrator, aws_sqs, "Publica EvaluacionCompletada", "AWS SDK v2 / HTTPS")
+  Rel(notif_worker, aws_sqs, "Consume mensajes (polling)", "AWS SDK v2 / HTTPS")
+  Rel(notif_worker, credit_db, "Actualiza estado de notificación", "JDBC / Hibernate Panache")
+  Rel(notif_worker, aws_ses, "Envía email al solicitante", "AWS SDK v2 / HTTPS")
+  Rel(aws_ses, solicitante, "Entrega email", "SMTP")
 
-  ContainerDb(auth_db, "Base de Datos Auth", "PostgreSQL 16\nauth_db", "Almacena usuarios, roles\ny tabla user_roles.")
-}
-
-' ── Boundary: Créditos ──────────────────────────────────────
-System_Boundary(credit_system, "Sistema de Evaluación de Créditos") {
-
-  Container(frontend, "Frontend SPA", "React 18 + TypeScript", "Interfaz web.\nFormulario de evaluación,\nlista de evaluaciones,\npantalla de login.")
-
-  Container(orchestrator, "Microservicio A — Orquestador", "Java 21 + Quarkus 3.x", "Valida cédula (Módulo 10).\nOrquesta llamadas a Riesgos.\nAplica reglas de negocio.\nPersiste evaluaciones.\nPublica eventos en SQS.\nValida JWT con clave pública de MS-C.")
-
-  Container(risk_service, "Microservicio B — Riesgos Mock", "Java 21 + Quarkus 3.x", "Expone score aleatorio (0–100)\ny lista de deudas por cédula.\nSimula latencia de 2s y 1.5s.")
-
-  ContainerDb(credit_db, "Base de Datos Créditos", "PostgreSQL 16\ncreditos_db", "Almacena evaluaciones\ny notificaciones.")
-
-  Container(notif_worker, "Notification Worker", "Quarkus Scheduler\n(embebido en MS-A)", "Consume mensajes de SQS.\nEnvía emails via AWS SES.\nRegistra estado de envío.")
-}
-
-' ── Sistemas Externos ────────────────────────────────────────
-System_Ext(aws_sqs, "AWS SQS", "Cola: credit-evaluation-notifications\nDLQ: credit-eval-notif-dlq")
-System_Ext(aws_ses, "AWS SES", "Envío de emails\ntransaccionales.")
-
-' ── Relaciones ───────────────────────────────────────────────
-
-' Usuario → Frontend
-Rel(analista, frontend, "Usa", "HTTPS / Browser")
-
-' Usuario → Auth (login + gestión)
-Rel(analista, auth_service, "Login / gestión usuarios", "HTTPS / REST")
-
-' Auth → auth_db
-Rel(auth_service, auth_db, "Persiste usuarios y roles", "JDBC / Hibernate ORM Panache")
-
-' Frontend → Orquestador (con JWT)
-Rel(frontend, orchestrator, "API calls", "HTTPS / REST / JSON\n(Bearer JWT)")
-
-' Orquestador → Riesgos (llamadas paralelas)
-Rel(orchestrator, risk_service, "GET /v1/risk/score/{cedula}\nGET /v1/risk/debts/{cedula}", "HTTP REST\n(paralelas, MicroProfile REST Client)")
-
-' Orquestador → credit_db
-Rel(orchestrator, credit_db, "Persiste evaluaciones\ny notificaciones", "JDBC / Hibernate ORM Panache")
-
-' Orquestador → SQS (publish)
-Rel(orchestrator, aws_sqs, "Publica EvaluacionCompletada", "AWS SDK v2 / HTTPS")
-
-' Worker → SQS (consume)
-Rel(notif_worker, aws_sqs, "Consume mensajes (polling)", "AWS SDK v2 / HTTPS")
-
-' Worker → credit_db
-Rel(notif_worker, credit_db, "Actualiza estado\nde notificación", "JDBC / Hibernate ORM Panache")
-
-' Worker → SES
-Rel(notif_worker, aws_ses, "Envía email al solicitante", "AWS SDK v2 / HTTPS")
-
-' SES → Solicitante
-Rel(aws_ses, solicitante, "Entrega email", "SMTP")
-
-@enduml
+  UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="2")
 ```
 
 ---
