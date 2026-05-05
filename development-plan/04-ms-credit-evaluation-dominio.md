@@ -14,7 +14,8 @@ Ninguna dependencia de infraestructura en esta capa.
 ## 1. Generar Scaffold
 
 ```bash
-jbang scaffold/MavenHexagonalScaffold.java -n ms-credit-evaluation -m sqs-producer
+cd backend/
+jbang ../scaffold/MavenHexagonalScaffold.java -n ms-credit-evaluation -m sqs-producer
 ```
 
 ## 2. Value Object — `Cedula`

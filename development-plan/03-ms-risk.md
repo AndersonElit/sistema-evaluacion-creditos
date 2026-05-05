@@ -14,10 +14,11 @@ No requiere autenticación ni base de datos — es un servicio interno mock.
 ## 1. Generar Scaffold
 
 ```bash
-jbang scaffold/MavenHexagonalScaffold.java -n ms-risk
+cd backend/
+jbang ../scaffold/MavenHexagonalScaffold.java -n ms-risk
 ```
 
-Resultado: carpeta `ms-risk/` con estructura Maven multimódulo hexagonal.
+Resultado: carpeta `backend/ms-risk/` con estructura Maven multimódulo hexagonal.
 
 ## 2. Dominio — `domain/model`
 

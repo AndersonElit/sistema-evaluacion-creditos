@@ -13,7 +13,8 @@ consumer SQS con `@Scheduled`, idempotencia por `evaluacion_id`, y
 ## 1. Generar Scaffold
 
 ```bash
-jbang scaffold/MavenHexagonalScaffold.java -n ms-notifications -m sqs-consumer
+cd backend/
+jbang ../scaffold/MavenHexagonalScaffold.java -n ms-notifications -m sqs-consumer
 ```
 
 ## 2. Migración manual — `notifications_db`
