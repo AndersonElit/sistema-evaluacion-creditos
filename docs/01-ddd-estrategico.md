@@ -81,9 +81,9 @@ EstadoEvaluacion
 |--------|-------------|-----------------|
 | `EvaluacionSolicitada` | Nueva solicitud recibida y validada | POST /v1/credit-evaluations exitoso |
 | `EvaluacionCompletada` | Resultado calculado y persistido | Regla de negocio evaluada |
-| `EvaluacionFallida` | Error al contactar servicio de riesgos | Timeout o error 5xx de Microservicio B |
+| `EvaluacionFallida` | Error al contactar servicio de riesgos | Timeout o error 5xx de ms-risk |
 
-> **Nota:** Este bounded context **no gestiona usuarios ni emite tokens JWT**. Delega completamente la identidad al Bounded Context de Identidad y Acceso (Microservicio C). El `evaluadoPor` es solo una referencia por ID/email extraída del JWT, no una consulta a MS-C.
+> **Nota:** Este bounded context **no gestiona usuarios ni emite tokens JWT**. Delega completamente la identidad al Bounded Context de Identidad y Acceso (ms-auth). El `evaluadoPor` es solo una referencia por ID/email extraída del JWT, no una consulta a ms-auth.
 
 ---
 
@@ -119,7 +119,7 @@ Deuda
 
 ### 3.3 Bounded Context: Identidad y Acceso (`identity-access`)
 
-**Responsabilidad:** Gestionar usuarios, credenciales, roles y emisión de tokens JWT. Implementado como **Microservicio C independiente** (`localhost:8082`). El resto del sistema no lo llama en runtime; solo comparte la clave pública RSA para verificación de tokens.
+**Responsabilidad:** Gestionar usuarios, credenciales, roles y emisión de tokens JWT. Implementado como **ms-auth independiente** (`localhost:8082`). El resto del sistema no lo llama en runtime; solo comparte la clave pública RSA para verificación de tokens.
 
 #### Lenguaje Ubicuo
 
@@ -192,37 +192,39 @@ Notificacion
 ## 4. Context Map
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                             CONTEXT MAP                                   │
-│                                                                           │
-│  ┌───────────────────┐  Customer/Supplier   ┌──────────────────────────┐ │
-│  │  Evaluación de    │ ───────────────────> │  Valoración de Riesgos   │ │
-│  │  Crédito (Core)   │  REST sync (A→B)     │  (Supporting)  MS-B      │ │
-│  │  MS-A :8080       │ <─────────────────── │  :8081                   │ │
-│  └─────────┬─────────┘                      └──────────────────────────┘ │
-│            │                                                              │
-│            │ Conformist                                                   │
-│            │ (consume JWT firmado por MS-C, sin llamarlo en runtime)      │
-│            │ [clave pública compartida vía PEM]                           │
-│            │                                                              │
-│  ┌─────────▼──────────┐                     ┌──────────────────────────┐ │
-│  │  Identidad y       │                     │  Notificaciones          │ │
-│  │  Acceso (Generic)  │                     │  (Supporting)            │ │
-│  │  MS-C :8082        │                     │  Worker embebido en MS-A │ │
-│  └────────────────────┘                     └──────────────────────────┘ │
-│            ▲                                           ▲                  │
-│            │ Usuario interactúa                        │ Published Language│
-│            │ (login, gestión)                          │ SQS Events (async)│
-│            │                                           │                  │
-│         [Frontend]  ─────── REST+JWT ──────>  [MS-A evalúa y publica]   │
-│                                                                           │
-│  Relaciones:                                                              │
-│  → Customer/Supplier: MS-A depende de MS-B como proveedor de riesgo     │
-│  → Conformist: MS-A acepta el contrato JWT emitido por MS-C             │
-│  → Published Language: MS-A publica EvaluacionCompletada en SQS,        │
-│    consumida por el Notification Worker                                  │
-│  → MS-C es autónomo: no depende ni llama a MS-A ni MS-B en runtime     │
-└──────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                                 CONTEXT MAP                                      │
+│                                                                                  │
+│  ┌────────────────────────┐  Customer/Supplier  ┌──────────────────────────┐    │
+│  │  Evaluación de Crédito │ ──────────────────> │  Valoración de Riesgos   │    │
+│  │  (Core)                │  REST sync          │  (Supporting)            │    │
+│  │  ms-credit-evaluation  │ <────────────────── │  ms-risk :8081           │    │
+│  │  :8080                 │                     └──────────────────────────┘    │
+│  └───────────┬────────────┘                                                     │
+│              │                                                                   │
+│              │ Conformist                                                        │
+│              │ (consume JWT firmado por ms-auth, sin llamarlo en runtime)        │
+│              │ [clave pública compartida vía PEM]                                │
+│              │                                                                   │
+│  ┌───────────▼────────────┐                     ┌──────────────────────────┐    │
+│  │  Identidad y Acceso    │                     │  Notificaciones          │    │
+│  │  (Generic)             │                     │  (Supporting)            │    │
+│  │  ms-auth :8082         │                     │  Worker en               │    │
+│  └────────────────────────┘                     │  ms-credit-evaluation    │    │
+│              ▲                                  └──────────────────────────┘    │
+│              │ Usuario interactúa                          ▲                     │
+│              │ (login, gestión)                            │ Published Language  │
+│              │                                             │ SQS Events (async)  │
+│              │                                             │                     │
+│           [Frontend] ── REST+JWT ──> [ms-credit-evaluation evalúa y publica]    │
+│                                                                                  │
+│  Relaciones:                                                                     │
+│  → Customer/Supplier: ms-credit-evaluation depende de ms-risk como proveedor    │
+│  → Conformist: ms-credit-evaluation acepta el contrato JWT de ms-auth           │
+│  → Published Language: ms-credit-evaluation publica EvaluacionCompletada        │
+│    en SQS, consumida por el Notification Worker                                  │
+│  → ms-auth es autónomo: no llama a ms-credit-evaluation ni ms-risk en runtime   │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -230,17 +232,17 @@ Notificacion
 ## 5. Resumen de Eventos de Dominio por Contexto
 
 ```
-[Evaluación de Crédito — MS-A]
+[Evaluación de Crédito — ms-credit-evaluation]
   EvaluacionSolicitada ──────────────────────────────────────────────>
   EvaluacionCompletada ──> [Notificaciones] : publica en SQS
   EvaluacionFallida    ──> log + respuesta de error al cliente
 
-[Identidad y Acceso — MS-C]   ← servicio independiente
+[Identidad y Acceso — ms-auth]   ← servicio independiente
   UsuarioCreado        ──> log interno (auth_db)
   SesionIniciada       ──> emite JWT firmado con clave privada RSA
-  SesionExpirada       ──> cliente recibe 401 (validado en MS-A sin llamar a MS-C)
+  SesionExpirada       ──> cliente recibe 401 (validado en ms-credit-evaluation sin llamar a ms-auth)
 
-[Notificaciones — Worker en MS-A]
+[Notificaciones — Worker en ms-credit-evaluation]
   NotificacionEnviada  ──> actualiza estado en creditos_db
   NotificacionFallida  ──> reintento / DLQ
 ```

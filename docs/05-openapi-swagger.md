@@ -5,7 +5,7 @@
 
 ---
 
-## Microservicio A — Orquestador (`localhost:8080`)
+## ms-credit-evaluation (`localhost:8080`)
 
 ```yaml
 openapi: 3.0.3
@@ -13,8 +13,8 @@ info:
   title: API de Evaluación de Créditos — Orquestador
   description: |
     API del microservicio orquestador de evaluaciones de crédito.
-    Todos los endpoints requieren Bearer JWT emitido por el Microservicio C (Auth).
-    La autenticación y gestión de usuarios se realiza exclusivamente en MS-C (:8082).
+    Todos los endpoints requieren Bearer JWT emitido por el ms-auth (Auth).
+    La autenticación y gestión de usuarios se realiza exclusivamente en ms-auth (:8082).
   version: 1.0.0
   contact:
     name: Equipo de Créditos
@@ -46,7 +46,7 @@ paths:
       description: |
         Evalúa una solicitud de crédito:
         1. Valida cédula ecuatoriana (Módulo 10)
-        2. Consulta score y deudas al Microservicio B (en paralelo)
+        2. Consulta score y deudas al ms-risk (en paralelo)
         3. Aplica regla: APROBADO si score > 70 Y (deudaMensual + cuotaNueva) < salario * 0.40
         4. Persiste el resultado
         5. Publica evento en SQS para notificación
@@ -164,9 +164,9 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        JWT emitido por POST /v1/auth/login en el Microservicio C (localhost:8082).
+        JWT emitido por POST /v1/auth/login en el ms-auth (localhost:8082).
         Claims incluidos: sub (email), groups (rol), exp, iat, userId, nombreCompleto.
-        MS-A valida la firma con la clave pública RSA de MS-C.
+        ms-credit-evaluation valida la firma con la clave pública RSA de ms-auth.
 
   parameters:
     EvaluacionId:
@@ -346,7 +346,7 @@ components:
 
 ---
 
-## Microservicio C — Auth / Identidad (`localhost:8082`)
+## ms-auth (`localhost:8082`)
 
 ```yaml
 openapi: 3.0.3
@@ -692,7 +692,7 @@ components:
 
 ---
 
-## Microservicio B — Riesgos Mock (`localhost:8081`)
+## ms-risk (`localhost:8081`)
 
 ```yaml
 openapi: 3.0.3
@@ -849,9 +849,9 @@ quarkus.swagger-ui.always-include=true
 quarkus.swagger-ui.path=/swagger-ui
 
 // Acceder en desarrollo:
-// Orquestador (MS-A): http://localhost:8080/swagger-ui
-// Riesgos     (MS-B): http://localhost:8081/swagger-ui
-// Auth        (MS-C): http://localhost:8082/swagger-ui
-// OpenAPI JSON MS-A:  http://localhost:8080/q/openapi
-// OpenAPI JSON MS-C:  http://localhost:8082/q/openapi
+// Orquestador (ms-credit-evaluation): http://localhost:8080/swagger-ui
+// Riesgos     (ms-risk): http://localhost:8081/swagger-ui
+// Auth        (ms-auth): http://localhost:8082/swagger-ui
+// OpenAPI JSON ms-credit-evaluation:  http://localhost:8080/q/openapi
+// OpenAPI JSON ms-auth:  http://localhost:8082/q/openapi
 ```

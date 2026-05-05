@@ -14,7 +14,7 @@ Tras completar una evaluación de crédito, el sistema notifica al solicitante p
 │  POST /v1/credit-evaluations                                     │
 │         │                                                        │
 │         ▼                                                        │
-│  [MS-A Orquestador]                                              │
+│  [ms-credit-evaluation Orquestador]                                              │
 │         │                                                        │
 │         ├── 1. Evalúa crédito (sync)                            │
 │         ├── 2. Persiste en PostgreSQL (sync)                     │
@@ -108,7 +108,7 @@ La DLQ retiene mensajes fallidos por **14 días** para revisión manual o reinte
 
 ---
 
-## 5. Publicación desde Microservicio A
+## 5. Publicación desde ms-credit-evaluation
 
 ### Dependencias (`pom.xml`)
 

@@ -27,11 +27,11 @@
 
 ---
 
-## ADR-002: REST vs gRPC para comunicación Microservicio A ↔ Microservicio B
+## ADR-002: REST vs gRPC para comunicación ms-credit-evaluation ↔ ms-risk
 
 **Estado:** Aceptado  
 **Fecha:** 2026-05-05  
-**Contexto:** MS-A (Orquestador) necesita consultar a MS-B (Riesgos) para obtener score y deudas. Debemos elegir el protocolo de comunicación.
+**Contexto:** ms-credit-evaluation (Orquestador) necesita consultar a ms-risk (Riesgos) para obtener score y deudas. Debemos elegir el protocolo de comunicación.
 
 ### Análisis
 
@@ -41,7 +41,7 @@
 - Soporte nativo en todos los lenguajes y herramientas
 - MicroProfile REST Client en Quarkus: anotaciones declarativas sin código de red
 - Swagger UI para documentación automática
-- Compatible con el Frontend si en el futuro MS-B fuera expuesto directamente
+- Compatible con el Frontend si en el futuro ms-risk fuera expuesto directamente
 
 **Desventajas:**
 - Overhead de serialización JSON vs Protobuf
@@ -62,14 +62,14 @@
 - Overkill para una comunicación simple request/response con latencia simulada de 2s (el cuello de botella no es el protocolo sino la latencia artificial)
 
 ### Decisión
-**REST** para MS-A ↔ MS-B por las siguientes razones:
+**REST** para ms-credit-evaluation ↔ ms-risk por las siguientes razones:
 
 1. **El cuello de botella es la latencia simulada** (2s/1.5s), no la serialización. gRPC no reduciría el tiempo total perceptiblemente.
 2. **Simplicidad del contrato**: el servicio de riesgos expone solo 2 endpoints simples con payloads pequeños.
 3. **Paralelismo suficiente con REST**: `MicroProfile REST Client` + `CompletableFuture.allOf()` permite llamadas paralelas que reducen la latencia de 3.5s a 2s.
 4. **Consistencia**: toda la comunicación del sistema usa REST/JSON, facilitando debugging y onboarding.
 
-> **Si el volumen de transacciones escalara a >10,000 req/s** o si MS-B expusiera streaming de datos, la decisión debería revisarse a favor de gRPC.
+> **Si el volumen de transacciones escalara a >10,000 req/s** o si ms-risk expusiera streaming de datos, la decisión debería revisarse a favor de gRPC.
 
 ---
 
@@ -101,7 +101,7 @@
 
 | Criterio | Keycloak | JWT Stateless (SmallRye) |
 |----------|:---:|:---:|
-| Complejidad de deploy | Alta (servicio extra) | **Baja (embebido en MS-A)** |
+| Complejidad de deploy | Alta (servicio extra) | **Baja (embebido en ms-credit-evaluation)** |
 | Gestión de usuarios | ✅ Completa (UI admin) | Manual (endpoints propios) |
 | SSO / Federación LDAP | ✅ | ❌ |
 | Revocación inmediata | ✅ | ❌ (mitigable con blacklist) |
@@ -186,11 +186,11 @@ Implementar el algoritmo directamente como Value Object `Cedula` en el dominio, 
 
 ---
 
-## ADR-007: Llamadas paralelas a MS-B
+## ADR-007: Llamadas paralelas a ms-risk
 
 **Estado:** Aceptado  
 **Fecha:** 2026-05-05  
-**Contexto:** MS-A necesita consultar el score (2s) y las deudas (1.5s) de forma eficiente.
+**Contexto:** ms-credit-evaluation necesita consultar el score (2s) y las deudas (1.5s) de forma eficiente.
 
 ### Implementación con Quarkus Mutiny
 
@@ -223,41 +223,41 @@ public ScoreResponse obtenerScore(@PathParam("cedula") String cedula) {
 }
 ```
 
-Si MS-B falla repetidamente, el Circuit Breaker abre y se retorna 503 al cliente en lugar de agotar threads esperando timeouts.
+Si ms-risk falla repetidamente, el Circuit Breaker abre y se retorna 503 al cliente en lugar de agotar threads esperando timeouts.
 
 ---
 
 ---
 
-## ADR-008: Desacoplamiento de Identidad en Microservicio Independiente (MS-C)
+## ADR-008: Desacoplamiento de Identidad en Microservicio Independiente (ms-auth)
 
 **Estado:** Aceptado  
 **Fecha:** 2026-05-05  
-**Contexto:** Originalmente, la autenticación y gestión de usuarios estaba embebida en el Microservicio A (Orquestador). Se evaluó si extraer esta responsabilidad a un servicio propio aportaba beneficios reales dado el tamaño del sistema.
+**Contexto:** Originalmente, la autenticación y gestión de usuarios estaba embebida en el ms-credit-evaluation. Se evaluó si extraer esta responsabilidad a un servicio propio aportaba beneficios reales dado el tamaño del sistema.
 
 ### Opciones evaluadas
 
-| Criterio | Auth embebida en MS-A | Auth en MS-C independiente |
+| Criterio | Auth embebida en ms-credit-evaluation | Auth en ms-auth independiente |
 |----------|:---:|:---:|
-| Responsabilidad única (SRP) | ❌ MS-A mezcla dominios | ✅ cada servicio tiene un propósito |
-| Escalabilidad independiente | ❌ escala todo junto | ✅ MS-C puede escalar por separado |
-| Reutilización futura | ❌ acoplado a MS-A | ✅ otros servicios pueden consumir JWT de MS-C |
+| Responsabilidad única (SRP) | ❌ ms-credit-evaluation mezcla dominios | ✅ cada servicio tiene un propósito |
+| Escalabilidad independiente | ❌ escala todo junto | ✅ ms-auth puede escalar por separado |
+| Reutilización futura | ❌ acoplado a ms-credit-evaluation | ✅ otros servicios pueden consumir JWT de ms-auth |
 | Aislamiento de BD | ❌ usuarios y evaluaciones en la misma BD | ✅ `auth_db` separada de `creditos_db` |
-| Acoplamiento en runtime | — | ✅ cero: MS-A solo necesita la clave pública RSA |
+| Acoplamiento en runtime | — | ✅ cero: ms-credit-evaluation solo necesita la clave pública RSA |
 | Complejidad operacional | Baja (1 servicio menos) | Media (un contenedor más) |
-| Riesgo de despliegue | Bajo | Bajo (MS-C no es una dependencia runtime de MS-A) |
+| Riesgo de despliegue | Bajo | Bajo (ms-auth no es una dependencia runtime de ms-credit-evaluation) |
 
 ### Decisión
-**Microservicio C independiente** por las siguientes razones:
+**ms-auth independiente** por las siguientes razones:
 
 1. **Separación de responsabilidades:** El orquestador de créditos no debe conocer ni gestionar credenciales de usuarios. Son dominios distintos (Core vs Generic).
-2. **Acoplamiento cero en runtime:** Gracias a JWT firmado con RS256, MS-A verifica tokens con la clave pública sin necesitar llamadas HTTP a MS-C. Si MS-C cae, MS-A sigue funcionando para tokens ya emitidos.
+2. **Acoplamiento cero en runtime:** Gracias a JWT firmado con RS256, ms-credit-evaluation verifica tokens con la clave pública sin necesitar llamadas HTTP a ms-auth. Si ms-auth cae, ms-credit-evaluation sigue funcionando para tokens ya emitidos.
 3. **Base de datos aislada:** `auth_db` y `creditos_db` evolucionan de forma independiente. No hay FKs cruzadas — `evaluado_por_id` en `credit_evaluations` es una referencia débil por UUID.
-4. **Ruta de migración clara:** Si en el futuro se adopta Keycloak o un IdP externo, solo se reemplaza MS-C sin tocar MS-A ni MS-B. Solo cambia `mp.jwt.verify.publickey.location`.
+4. **Ruta de migración clara:** Si en el futuro se adopta Keycloak o un IdP externo, solo se reemplaza ms-auth sin tocar ms-credit-evaluation ni ms-risk. Solo cambia `mp.jwt.verify.publickey.location`.
 
 ### Consecuencias
-- El frontend hace dos tipos de llamadas: a MS-C para autenticarse y a MS-A para operar.
-- La clave pública RSA debe estar disponible en el build de MS-A (como archivo PEM) o descargarse de `GET /v1/auth/public-key` de MS-C durante el arranque.
+- El frontend hace dos tipos de llamadas: a ms-auth para autenticarse y a ms-credit-evaluation para operar.
+- La clave pública RSA debe estar disponible en el build de ms-credit-evaluation (como archivo PEM) o descargarse de `GET /v1/auth/public-key` de ms-auth durante el arranque.
 - Se agrega un contenedor al Docker Compose de desarrollo.
 
 ---
@@ -273,4 +273,4 @@ Si MS-B falla repetidamente, el Circuit Breaker abre y se retorna 503 al cliente
 | ADR-005 | AWS SQS | Llamada directa | Desacoplamiento, resiliencia, DLQ |
 | ADR-006 | Módulo 10 custom | Regex simple | Validación matemática real de cédulas |
 | ADR-007 | Llamadas paralelas | Secuencial | 43% menos latencia por request |
-| ADR-008 | Auth en MS-C independiente | Auth embebida en MS-A | SRP, aislamiento de BD, cero acoplamiento runtime |
+| ADR-008 | Auth en ms-auth independiente | Auth embebida en ms-credit-evaluation | SRP, aislamiento de BD, cero acoplamiento runtime |

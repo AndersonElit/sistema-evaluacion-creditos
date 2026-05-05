@@ -27,14 +27,14 @@ Mini-ecosistema de evaluación de créditos compuesto por un Frontend React, un 
 | Capa | Tecnología |
 |------|-----------|
 | Frontend | React 18, TypeScript, Axios |
-| Microservicio A (Orquestador) | Java 21, Quarkus 3.x, Hibernate ORM Panache |
-| Microservicio B (Riesgos) | Java 21, Quarkus 3.x |
-| Microservicio C (Auth/Identidad) | Java 21, Quarkus 3.x, SmallRye JWT Build |
-| Base de Datos A | PostgreSQL 16 — `creditos_db` |
-| Base de Datos C | PostgreSQL 16 — `auth_db` |
+| ms-credit-evaluation | Java 21, Quarkus 3.x, Hibernate ORM Panache |
+| ms-risk | Java 21, Quarkus 3.x |
+| ms-auth | Java 21, Quarkus 3.x, SmallRye JWT Build |
+| Base de Datos (ms-credit-evaluation) | PostgreSQL 16 — `creditos_db` |
+| Base de Datos (ms-auth) | PostgreSQL 16 — `auth_db` |
 | Mensajería | AWS SQS + AWS SES |
-| Comunicación A↔B | REST (HTTP/1.1) + MicroProfile REST Client |
-| Comunicación A↔C | Ninguna en runtime — JWT validado con clave pública compartida |
+| Comunicación ms-credit-evaluation ↔ ms-risk | REST (HTTP/1.1) + MicroProfile REST Client |
+| Comunicación ms-credit-evaluation ↔ ms-auth | Ninguna en runtime — JWT validado con clave pública compartida |
 | Contenedores | Docker + Docker Compose |
 
 ---
@@ -42,39 +42,39 @@ Mini-ecosistema de evaluación de créditos compuesto por un Frontend React, un 
 ## Arquitectura en una Línea
 
 ```
-[React UI] ──REST──> [Auth C :8082] ──JWT──> [React UI]
-                                                  │
-[React UI] ──REST+JWT──> [Orquestador A :8080] ──REST──> [Riesgos B :8081]
-                               │
-                          [creditos_db]
-                               │
-                          [AWS SQS] ──consume──> [Notification Worker]
-                                                          │
-                                                    [AWS SES / Email]
+[React UI] ──REST──> [ms-auth :8082] ──JWT──> [React UI]
+                                                   │
+[React UI] ──REST+JWT──> [ms-credit-evaluation :8080] ──REST──> [ms-risk :8081]
+                                    │
+                               [creditos_db]
+                                    │
+                               [AWS SQS] ──consume──> [Notification Worker]
+                                                               │
+                                                         [AWS SES / Email]
 
-[Auth C] ──escribe──> [auth_db]
+[ms-auth] ──escribe──> [auth_db]
 ```
 
 ---
 
 ## Funcionalidades del Sistema
 
-### Microservicio C — Auth/Identidad (nuevo, desacoplado)
+### ms-auth (nuevo, desacoplado)
 - Servicio independiente dedicado a identidad y acceso
 - JWT stateless firmado con RS256 (SmallRye JWT Build)
 - Registro de nuevos usuarios (solo por `ADMIN`)
 - Roles: `ADMIN`, `ANALYST`, `VIEWER`
 - Base de datos propia: `auth_db`
-- MS-A valida JWT usando la clave pública de MS-C sin llamarlo en runtime
+- ms-credit-evaluation valida JWT usando la clave pública de ms-auth sin llamarlo en runtime
 
-### Microservicio A — Orquestador (simplificado)
+### ms-credit-evaluation (simplificado)
 - Solo responsabilidad: orquestar evaluaciones de crédito
-- Valida JWT con la clave pública compartida de MS-C
+- Valida JWT con la clave pública compartida de ms-auth
 - Sin gestión de usuarios ni emisión de tokens
 - Base de datos propia: `creditos_db`
 
 ### Notificaciones por Email (SQS)
-- Al completar una evaluación, Microservicio A publica un mensaje en una cola SQS
+- Al completar una evaluación, ms-credit-evaluation publica un mensaje en una cola SQS
 - Un worker (Quarkus scheduler) consume la cola y envía email vía AWS SES
 - Notifica al solicitante: crédito **APROBADO** o **RECHAZADO**
 - Dead Letter Queue (DLQ) para mensajes fallidos

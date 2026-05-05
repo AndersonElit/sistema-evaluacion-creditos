@@ -1,10 +1,10 @@
-# Microservicio C — Autenticación, Login y Gestión de Usuarios
+# ms-auth — Autenticación, Login y Gestión de Usuarios
 
 ## 1. Arquitectura del Servicio
 
-La autenticación y gestión de identidad está implementada como un **microservicio independiente (MS-C)** que corre en el puerto `8082`. Esta separación garantiza que MS-A (Orquestador) tenga una única responsabilidad: evaluar créditos.
+La autenticación y gestión de identidad está implementada como un **microservicio independiente (ms-auth)** que corre en el puerto `8082`. Esta separación garantiza que ms-credit-evaluation (Orquestador) tenga una única responsabilidad: evaluar créditos.
 
-**Principio de integración:** MS-C emite JWT firmados con una clave privada RSA. MS-A y cualquier otro servicio validan esos tokens usando únicamente la clave pública RSA, **sin llamadas en runtime a MS-C**.
+**Principio de integración:** ms-auth emite JWT firmados con una clave privada RSA. ms-credit-evaluation y cualquier otro servicio validan esos tokens usando únicamente la clave pública RSA, **sin llamadas en runtime a ms-auth**.
 
 ## 2. Estrategia de Autenticación
 
@@ -27,29 +27,27 @@ Se usa **JWT stateless** con el estándar **MicroProfile JWT** implementado en Q
 ## 3. Flujo de Autenticación
 
 ```
-PASO 1 — Login (solo MS-C):
+PASO 1 — Login (solo ms-auth):
 
-┌──────────┐  POST /v1/auth/login   ┌──────────────────────────────┐
-│ Frontend │ ──────────────────────>│  Microservicio C — Auth      │
-│          │  {email, password}     │  :8082                       │
-│          │                        │  1. Busca user en auth_db    │
-│          │ <──────────────────── │  2. bcrypt.verify(pwd)       │
-│          │  {accessToken,         │  3. Genera JWT (RS256)       │
-│          │   expiresIn, usuario}  │                              │
-└──────────┘                        └──────────────────────────────┘
+┌──────────┐  POST /v1/auth/login   ┌────────────────────────────────┐
+│ Frontend │ ──────────────────────>│  ms-auth  :8082                │
+│          │  {email, password}     │  1. Busca user en auth_db      │
+│          │ <──────────────────── │  2. bcrypt.verify(pwd)         │
+│          │  {accessToken,         │  3. Genera JWT (RS256)         │
+│          │   expiresIn, usuario}  │                                │
+└──────────┘                        └────────────────────────────────┘
 
-PASO 2 — Uso del JWT (MS-A, sin llamar a MS-C):
+PASO 2 — Uso del JWT (ms-credit-evaluation, sin llamar a ms-auth):
 
-┌──────────┐  GET /v1/credit-evaluations    ┌──────────────────────────────┐
-│ Frontend │ ─────────────────────────────> │  Microservicio A — Orquestador│
-│          │  Authorization: Bearer <jwt>   │  :8080                       │
-│          │                                │  1. Verifica firma con       │
-│          │ <───────────────────────────── │     clave pública RSA        │
-│          │  200 OK + datos                │  2. Verifica expiración      │
-│          │                                │  3. Extrae rol (groups)      │
-└──────────┘                                │  4. Verifica @RolesAllowed   │
-                                            └──────────────────────────────┘
-                                            (no hay llamada HTTP a MS-C)
+┌──────────┐  GET /v1/credit-evaluations    ┌────────────────────────────────┐
+│ Frontend │ ─────────────────────────────> │  ms-credit-evaluation  :8080   │
+│          │  Authorization: Bearer <jwt>   │  1. Verifica firma con         │
+│          │                                │     clave pública RSA          │
+│          │ <───────────────────────────── │  2. Verifica expiración        │
+│          │  200 OK + datos                │  3. Extrae rol (groups)        │
+└──────────┘                                │  4. Verifica @RolesAllowed     │
+                                            └────────────────────────────────┘
+                                            (no hay llamada HTTP a ms-auth)
 ```
 
 ---
@@ -105,7 +103,7 @@ PASO 2 — Uso del JWT (MS-A, sin llamar a MS-C):
 </dependency>
 ```
 
-### `application.properties` — Microservicio C (Auth)
+### `application.properties` — ms-auth (Auth)
 
 ```properties
 quarkus.http.port=8082
@@ -114,7 +112,7 @@ quarkus.http.port=8082
 smallrye.jwt.sign.key.location=META-INF/resources/privateKey.pem
 mp.jwt.token.expiration.time=28800
 
-# ── JWT Validation (para los endpoints protegidos de MS-C) ───
+# ── JWT Validation (para los endpoints protegidos de ms-auth) ───
 mp.jwt.verify.publickey.location=META-INF/resources/publicKey.pem
 mp.jwt.verify.issuer=https://auth.banco.com
 
@@ -125,19 +123,19 @@ quarkus.security.users.embedded.enabled=false
 quarkus.datasource.jdbc.url=jdbc:postgresql://${AUTH_DB_HOST:localhost}:5433/auth_db
 ```
 
-### `application.properties` — Microservicio A (validación JWT sin generación)
+### `application.properties` — ms-credit-evaluation (validación JWT sin generación)
 
 ```properties
 quarkus.http.port=8080
 
-# ── JWT Validation únicamente — MS-A no genera tokens ────────
+# ── JWT Validation únicamente — ms-credit-evaluation no genera tokens ────────
 mp.jwt.verify.publickey.location=META-INF/resources/publicKey.pem
 mp.jwt.verify.issuer=https://auth.banco.com
 
-# La clave pública es la misma que usa MS-C para firmar.
-# Se distribuye como archivo PEM copiado en el build de MS-A,
+# La clave pública es la misma que usa ms-auth para firmar.
+# Se distribuye como archivo PEM copiado en el build de ms-credit-evaluation,
 # o descargada de GET http://auth-service:8082/v1/auth/public-key en startup.
-# MS-A NO necesita la clave privada.
+# ms-credit-evaluation NO necesita la clave privada.
 ```
 
 ### Generación del par de claves RSA
@@ -154,7 +152,7 @@ openssl rsa -in privateKey.pem -pubout -out publicKey.pem
 
 ---
 
-## 6. Implementación de Endpoints (en MS-C)
+## 6. Implementación de Endpoints (en ms-auth)
 
 ### `AuthResource.java`
 
@@ -264,22 +262,22 @@ public class AuthService {
 
 ## 7. Protección de Endpoints por Rol
 
-Los endpoints de MS-A aplican `@RolesAllowed` sobre el JWT emitido por MS-C:
+Los endpoints de ms-credit-evaluation aplican `@RolesAllowed` sobre el JWT emitido por ms-auth:
 
 ```java
-// En MS-A — Solo ADMIN y ANALYST pueden evaluar
+// En ms-credit-evaluation — Solo ADMIN y ANALYST pueden evaluar
 @POST
 @Path("/v1/credit-evaluations")
 @RolesAllowed({"ADMIN", "ANALYST"})
 public Response evaluarCredito(...) { ... }
 
-// En MS-A — Todos los roles autenticados pueden ver la lista
+// En ms-credit-evaluation — Todos los roles autenticados pueden ver la lista
 @GET
 @Path("/v1/credit-evaluations")
 @Authenticated
 public List<EvaluacionResponse> listar(...) { ... }
 
-// En MS-C — Solo ADMIN puede gestionar usuarios
+// En ms-auth — Solo ADMIN puede gestionar usuarios
 @POST
 @Path("/v1/auth/users")
 @RolesAllowed("ADMIN")
@@ -312,10 +310,10 @@ public Response crearUsuario(...) { ... }
 
 ### CORS Seguro
 
-Cada microservicio configura su propio CORS. MS-C acepta llamadas del frontend para login:
+Cada microservicio configura su propio CORS. ms-auth acepta llamadas del frontend para login:
 
 ```properties
-# application.properties de MS-C
+# application.properties de ms-auth
 quarkus.http.cors=true
 quarkus.http.cors.origins=http://localhost:3000,https://creditos.banco.com
 quarkus.http.cors.methods=GET,POST,PUT,OPTIONS
@@ -361,7 +359,7 @@ private String password;
 ## 10. Flujo de Creación de Usuario (Admin)
 
 ```
-[Admin UI]  →  POST /v1/auth/users  →  [MS-C :8082]
+[Admin UI]  →  POST /v1/auth/users  →  [ms-auth :8082]
                                               │
                                        ¿Email existe? (auth_db)
                                        ├── Sí → 409 Conflict

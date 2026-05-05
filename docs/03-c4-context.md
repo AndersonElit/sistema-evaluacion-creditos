@@ -16,8 +16,8 @@ C4Context
   Person(administrador, "Administrador", "Usuario con rol ADMIN. Gestiona usuarios, roles y configuración.")
   Person_Ext(solicitante, "Solicitante de Crédito", "Ciudadano que solicita financiamiento. Recibe la respuesta por email.")
 
-  System(auth_sistema, "Sistema de Identidad y Acceso", "Autentica usuarios, gestiona roles y emite tokens JWT. (MS-C :8082)")
-  System(sistema, "Sistema de Evaluación de Créditos", "Evalúa solicitudes de crédito, orquesta servicios de riesgo y notifica el resultado por email. (MS-A + MS-B)")
+  System(auth_sistema, "Sistema de Identidad y Acceso", "Autentica usuarios, gestiona roles y emite tokens JWT. (ms-auth :8082)")
+  System(sistema, "Sistema de Evaluación de Créditos", "Evalúa solicitudes de crédito, orquesta servicios de riesgo y notifica el resultado por email. (ms-credit-evaluation + ms-risk)")
 
   System_Ext(aws_sqs, "AWS SQS", "Cola de mensajes gestionada. Desacopla la evaluación de la notificación al solicitante.")
   System_Ext(aws_ses, "AWS SES", "Servicio de envío de email. Entrega los correos de aprobación o rechazo.")
@@ -49,7 +49,7 @@ C4Context
  ┌──────────────┐   HTTPS/REST (login)   ┌──────────────────────────┐
  │   Analista   │ ──────────────────────>│  SISTEMA DE IDENTIDAD    │
  │  de Crédito  │ <── JWT ──────────────│  Y ACCESO                │
- └──────┬───────┘                        │  (MS-C — Auth)           │
+ └──────┬───────┘                        │  (ms-auth — Auth)           │
         │                                │                          │
  ┌──────┴───────┐   HTTPS/REST (login)   │  • Login / JWT           │
  │Administrador │ ──────────────────────>│  • Gestión de usuarios   │
@@ -60,10 +60,10 @@ C4Context
         ▼
  ┌──────────────────────────────────────┐
  │  SISTEMA DE EVALUACIÓN DE CRÉDITOS   │
- │  (MS-A — Orquestador + Frontend)     │
+ │  (ms-credit-evaluation — Orquestador + Frontend)     │
  │                                      │
  │  • Evalúa solicitudes de crédito     │
- │  • Consulta score y deudas (MS-B)    │
+ │  • Consulta score y deudas (ms-risk)    │
  │  • Persiste evaluaciones (creditos_db│
  │  • Notifica resultado (SQS + SES)    │
  └──────────────┬───────────────────────┘
@@ -88,10 +88,10 @@ C4Context
 | Elemento | Tipo | Descripción | Tecnología |
 |----------|------|-------------|-----------|
 | Analista de Crédito | Persona | Opera el frontend para evaluar solicitudes | Navegador web |
-| Administrador | Persona | Gestiona usuarios y roles vía MS-C | Navegador web |
+| Administrador | Persona | Gestiona usuarios y roles vía ms-auth | Navegador web |
 | Solicitante de Crédito | Persona (externo) | No interactúa directamente; recibe el resultado por email | Email |
-| Sistema de Identidad y Acceso | **Sistema propio (MS-C)** | Autenticación, autorización, gestión de usuarios y roles | Quarkus + PostgreSQL (auth_db) |
-| Sistema de Evaluación de Créditos | **Sistema propio (MS-A + MS-B)** | Orquestación de evaluaciones, riesgos y notificaciones | React + Quarkus + PostgreSQL (creditos_db) |
+| Sistema de Identidad y Acceso | **Sistema propio (ms-auth)** | Autenticación, autorización, gestión de usuarios y roles | Quarkus + PostgreSQL (auth_db) |
+| Sistema de Evaluación de Créditos | **Sistema propio (ms-credit-evaluation + ms-risk)** | Orquestación de evaluaciones, riesgos y notificaciones | React + Quarkus + PostgreSQL (creditos_db) |
 | AWS SQS | Sistema externo | Cola de mensajes para desacoplar evaluación y notificación | AWS Managed Service |
 | AWS SES | Sistema externo | Servicio de email transaccional | AWS Managed Service |
 
@@ -103,11 +103,11 @@ C4Context
 El solicitante es quien se beneficia del resultado pero no opera el sistema directamente: en el modelo de negocio actual, el analista ingresa los datos en nombre del solicitante. El solicitante solo recibe la notificación por email con el veredicto.
 
 ### ¿Por qué Auth es un sistema separado?
-El Sistema de Identidad y Acceso (MS-C) está desacoplado del Sistema de Evaluación de Créditos porque:
-1. **Responsabilidad única**: MS-A no mezcla lógica de negocio (evaluar créditos) con lógica de identidad (gestionar usuarios).
-2. **Escalabilidad independiente**: MS-C puede evolucionar sin afectar a MS-A.
-3. **Reutilización**: MS-C podría emitir tokens para otros servicios futuros sin modificar MS-A.
-4. El acoplamiento en runtime es **cero**: MS-A valida JWTs solo con la clave pública RSA, sin hacer llamadas HTTP a MS-C.
+El Sistema de Identidad y Acceso (ms-auth) está desacoplado del Sistema de Evaluación de Créditos porque:
+1. **Responsabilidad única**: ms-credit-evaluation no mezcla lógica de negocio (evaluar créditos) con lógica de identidad (gestionar usuarios).
+2. **Escalabilidad independiente**: ms-auth puede evolucionar sin afectar a ms-credit-evaluation.
+3. **Reutilización**: ms-auth podría emitir tokens para otros servicios futuros sin modificar ms-credit-evaluation.
+4. El acoplamiento en runtime es **cero**: ms-credit-evaluation valida JWTs solo con la clave pública RSA, sin hacer llamadas HTTP a ms-auth.
 
 ### ¿Por qué AWS SQS y no llamada directa a email?
 El desacoplamiento asíncrono via SQS garantiza:
@@ -120,4 +120,4 @@ El sistema **no** incluye:
 - Consulta a burós de crédito reales (se usa mock)
 - Portal de autoservicio para el solicitante
 - Integración con core bancario
-- SSO / federación con proveedores externos (MS-C usa usuarios internos)
+- SSO / federación con proveedores externos (ms-auth usa usuarios internos)

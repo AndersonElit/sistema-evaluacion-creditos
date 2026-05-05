@@ -4,14 +4,14 @@ El sistema utiliza **dos bases de datos independientes**, una por cada microserv
 
 | Base de datos | Propietario | Tablas |
 |---------------|-------------|--------|
-| `auth_db` | Microservicio C — Auth | `users`, `roles`, `user_roles` |
-| `creditos_db` | Microservicio A — Orquestador | `credit_evaluations`, `notifications` |
+| `auth_db` | ms-auth | `users`, `roles`, `user_roles` |
+| `creditos_db` | ms-credit-evaluation | `credit_evaluations`, `notifications` |
 
 La columna `evaluado_por_id` en `credit_evaluations` es una **referencia débil por UUID** al usuario en `auth_db`. No existe foreign key cruzada entre bases de datos; la integridad se garantiza a nivel de aplicación.
 
 ---
 
-## Base de Datos: `auth_db` — Microservicio C
+## Base de Datos: `auth_db` — ms-auth
 
 ```
 ┌────────────────────────────┐         ┌──────────────────────────────┐
@@ -32,7 +32,7 @@ La columna `evaluado_por_id` en `credit_evaluations` es una **referencia débil 
                                          └────────────────────────────┘
 ```
 
-## Base de Datos: `creditos_db` — Microservicio A
+## Base de Datos: `creditos_db` — ms-credit-evaluation
 
 ```
 ┌────────────────────────────────────────────────────┐
@@ -73,7 +73,7 @@ La columna `evaluado_por_id` en `credit_evaluations` es una **referencia débil 
 
 ## DDL — Scripts de Creación
 
-### `auth_db` — ejecutar en el PostgreSQL de Microservicio C
+### `auth_db` — ejecutar en el PostgreSQL de ms-auth
 
 ```sql
 -- ================================================================
@@ -145,7 +145,7 @@ WHERE u.email = 'admin@banco.com' AND r.nombre = 'ADMIN';
 
 ---
 
-### `creditos_db` — ejecutar en el PostgreSQL de Microservicio A
+### `creditos_db` — ejecutar en el PostgreSQL de ms-credit-evaluation
 
 ```sql
 -- ================================================================
@@ -226,7 +226,7 @@ CREATE UNIQUE INDEX idx_notifications_evaluacion_unique
 
 ## Descripción de Tablas
 
-### Tablas en `auth_db` (Microservicio C)
+### Tablas en `auth_db` (ms-auth)
 
 #### `users`
 | Columna | Tipo | Descripción |
@@ -250,7 +250,7 @@ Tabla de unión many-to-many entre `users` y `roles`. En la práctica del sistem
 
 ---
 
-### Tablas en `creditos_db` (Microservicio A)
+### Tablas en `creditos_db` (ms-credit-evaluation)
 
 ### `credit_evaluations`
 | Columna | Tipo | Descripción |
@@ -284,7 +284,7 @@ Tabla de unión many-to-many entre `users` y `roles`. En la práctica del sistem
 
 ## Configuración Quarkus (application.properties)
 
-### Microservicio A — `creditos_db`
+### ms-credit-evaluation — `creditos_db`
 
 ```properties
 # ── Datasource ───────────────────────────────────────────────
@@ -301,7 +301,7 @@ quarkus.flyway.migrate-at-start=true
 quarkus.flyway.locations=classpath:db/migration
 ```
 
-### Microservicio C — `auth_db`
+### ms-auth — `auth_db`
 
 ```properties
 # ── Datasource ───────────────────────────────────────────────
