@@ -1,11 +1,12 @@
 # Modelo de Base de Datos — PostgreSQL
 
-El sistema utiliza **dos bases de datos independientes**, una por cada microservicio con datos propios:
+El sistema utiliza **tres bases de datos independientes**, una por cada microservicio con datos propios:
 
 | Base de datos | Propietario | Tablas |
 |---------------|-------------|--------|
 | `auth_db` | ms-auth | `users`, `roles`, `user_roles` |
-| `creditos_db` | ms-credit-evaluation | `credit_evaluations`, `notifications` |
+| `creditos_db` | ms-credit-evaluation | `credit_evaluations` |
+| `notifications_db` | ms-notifications | `notifications` |
 
 La columna `evaluado_por_id` en `credit_evaluations` es una **referencia débil por UUID** al usuario en `auth_db`. No existe foreign key cruzada entre bases de datos; la integridad se garantiza a nivel de aplicación.
 
@@ -48,17 +49,17 @@ La columna `evaluado_por_id` en `credit_evaluations` es una **referencia débil 
 │    estado_final        VARCHAR(20)  NOT NULL        │
 │    fecha_evaluacion    TIMESTAMPTZ  NOT NULL        │
 │    evaluado_por_id     UUID  [ref. débil a auth_db] │
-│    notificacion_enviada BOOLEAN DEFAULT FALSE       │
 └────────────────────────────────────────────────────┘
-              △
-              │ 1
-              │
-              │ 0..1
+```
+
+## Base de Datos: `notifications_db` — ms-notifications
+
+```
 ┌────────────────────────────────────────────────────┐
 │                    notifications                    │
 ├────────────────────────────────────────────────────┤
 │ PK id                  UUID                        │
-│ FK evaluacion_id       UUID         NOT NULL        │
+│    evaluacion_id       UUID         NOT NULL        │
 │    destinatario_email  VARCHAR(255) NOT NULL        │
 │    tipo_notificacion   VARCHAR(20)  NOT NULL        │
 │    estado              VARCHAR(20)  NOT NULL        │
@@ -68,6 +69,8 @@ La columna `evaluado_por_id` en `credit_evaluations` es una **referencia débil 
 │    creado_en           TIMESTAMPTZ  NOT NULL        │
 └────────────────────────────────────────────────────┘
 ```
+
+> `evaluacion_id` es una **referencia débil por UUID** a `credit_evaluations` en `creditos_db`. No existe FK cruzada entre bases de datos; la idempotencia se garantiza vía índice único en `evaluacion_id`.
 
 ---
 
@@ -157,8 +160,6 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- TIPOS ENUMERADOS
 -- ================================================================
 CREATE TYPE estado_evaluacion AS ENUM ('APROBADO', 'RECHAZADO', 'PENDIENTE');
-CREATE TYPE tipo_notif        AS ENUM ('APROBADO', 'RECHAZADO');
-CREATE TYPE estado_notif      AS ENUM ('PENDIENTE', 'ENVIADO', 'FALLIDO');
 
 -- ================================================================
 -- TABLA: credit_evaluations
@@ -173,23 +174,7 @@ CREATE TABLE credit_evaluations (
     deuda_mensual_total  NUMERIC(15, 2) NOT NULL CHECK (deuda_mensual_total >= 0),
     estado_final         estado_evaluacion NOT NULL DEFAULT 'PENDIENTE',
     fecha_evaluacion     TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
-    evaluado_por_id      UUID,          -- referencia débil a auth_db.users, sin FK cruzada
-    notificacion_enviada BOOLEAN        NOT NULL DEFAULT FALSE
-);
-
--- ================================================================
--- TABLA: notifications
--- ================================================================
-CREATE TABLE notifications (
-    id                   UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-    evaluacion_id        UUID          NOT NULL REFERENCES credit_evaluations(id) ON DELETE CASCADE,
-    destinatario_email   VARCHAR(255)  NOT NULL,
-    tipo_notificacion    tipo_notif    NOT NULL,
-    estado               estado_notif  NOT NULL DEFAULT 'PENDIENTE',
-    intentos             INTEGER       NOT NULL DEFAULT 0,
-    enviado_en           TIMESTAMPTZ,
-    mensaje_sqs_id       VARCHAR(255),
-    creado_en            TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+    evaluado_por_id      UUID           -- referencia débil a auth_db.users, sin FK cruzada
 );
 
 -- ================================================================
@@ -211,13 +196,49 @@ CREATE INDEX idx_credit_eval_fecha
 -- Evaluaciones por usuario (dashboard)
 CREATE INDEX idx_credit_eval_usuario
     ON credit_evaluations (evaluado_por_id);
+```
 
--- Notificaciones pendientes (polling del worker)
+---
+
+### `notifications_db` — ejecutar en el PostgreSQL de ms-notifications
+
+```sql
+-- ================================================================
+-- EXTENSIONES
+-- ================================================================
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- ================================================================
+-- TIPOS ENUMERADOS
+-- ================================================================
+CREATE TYPE tipo_notif   AS ENUM ('APROBADO', 'RECHAZADO');
+CREATE TYPE estado_notif AS ENUM ('PENDIENTE', 'ENVIADO', 'FALLIDO');
+
+-- ================================================================
+-- TABLA: notifications
+-- ================================================================
+CREATE TABLE notifications (
+    id                   UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
+    evaluacion_id        UUID          NOT NULL,   -- ref. débil a creditos_db, sin FK cruzada
+    destinatario_email   VARCHAR(255)  NOT NULL,
+    tipo_notificacion    tipo_notif    NOT NULL,
+    estado               estado_notif  NOT NULL DEFAULT 'PENDIENTE',
+    intentos             INTEGER       NOT NULL DEFAULT 0,
+    enviado_en           TIMESTAMPTZ,
+    mensaje_sqs_id       VARCHAR(255),
+    creado_en            TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+-- ================================================================
+-- ÍNDICES DE RENDIMIENTO
+-- ================================================================
+
+-- Notificaciones pendientes (polling del scheduler)
 CREATE INDEX idx_notifications_estado
     ON notifications (estado)
     WHERE estado = 'PENDIENTE';
 
--- Evitar notificaciones duplicadas por evaluación
+-- Idempotencia: una notificación por evaluación
 CREATE UNIQUE INDEX idx_notifications_evaluacion_unique
     ON notifications (evaluacion_id);
 ```
@@ -252,7 +273,7 @@ Tabla de unión many-to-many entre `users` y `roles`. En la práctica del sistem
 
 ### Tablas en `creditos_db` (ms-credit-evaluation)
 
-### `credit_evaluations`
+#### `credit_evaluations`
 | Columna | Tipo | Descripción |
 |---------|------|-------------|
 | `id` | UUID | PK |
@@ -265,13 +286,16 @@ Tabla de unión many-to-many entre `users` y `roles`. En la práctica del sistem
 | `estado_final` | ENUM | APROBADO / RECHAZADO / PENDIENTE |
 | `fecha_evaluacion` | TIMESTAMPTZ | Momento exacto de la evaluación |
 | `evaluado_por_id` | UUID (ref. débil) | ID del analista en `auth_db` — sin FK cruzada |
-| `notificacion_enviada` | BOOLEAN | Flag para idempotencia de notificaciones |
 
-### `notifications`
+---
+
+### Tablas en `notifications_db` (ms-notifications)
+
+#### `notifications`
 | Columna | Tipo | Descripción |
 |---------|------|-------------|
 | `id` | UUID | PK |
-| `evaluacion_id` | UUID FK | Evaluación asociada (unique: 1 notif por eval) |
+| `evaluacion_id` | UUID (ref. débil) | ID de evaluación en `creditos_db` — sin FK cruzada |
 | `destinatario_email` | VARCHAR(255) | Email del solicitante |
 | `tipo_notificacion` | ENUM | APROBADO / RECHAZADO |
 | `estado` | ENUM | PENDIENTE / ENVIADO / FALLIDO |
@@ -316,9 +340,23 @@ quarkus.hibernate-orm.database.generation=validate
 # ── Flyway (migraciones) ─────────────────────────────────────
 quarkus.flyway.migrate-at-start=true
 quarkus.flyway.locations=classpath:db/migration
+```
 
-# ── Seguridad SQL: usar siempre PreparedStatements (Panache lo hace automáticamente)
-# Nunca concatenar strings en queries — usar parámetros con ?1, :param
+### ms-notifications — `notifications_db`
+
+```properties
+# ── Datasource ───────────────────────────────────────────────
+quarkus.datasource.db-kind=postgresql
+quarkus.datasource.username=${NOTIF_DB_USERNAME:postgres}
+quarkus.datasource.password=${NOTIF_DB_PASSWORD:postgres}
+quarkus.datasource.jdbc.url=jdbc:postgresql://${NOTIF_DB_HOST:localhost}:5434/notifications_db
+
+# ── Hibernate ORM ────────────────────────────────────────────
+quarkus.hibernate-orm.database.generation=validate
+
+# ── Flyway (migraciones) ─────────────────────────────────────
+quarkus.flyway.migrate-at-start=true
+quarkus.flyway.locations=classpath:db/migration
 ```
 
 ---

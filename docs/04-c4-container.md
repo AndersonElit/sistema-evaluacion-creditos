@@ -22,10 +22,14 @@ C4Container
 
   System_Boundary(credit_system, "Sistema de Evaluación de Créditos") {
     Container(frontend, "Frontend SPA", "React 18 + TypeScript", "Interfaz web. Formulario de evaluación, lista de evaluaciones, pantalla de login.")
-    Container(orchestrator, "ms-credit-evaluation", "Java 21 + Quarkus 3.x", "Valida cédula (Módulo 10). Orquesta llamadas a Riesgos. Aplica reglas de negocio. Persiste evaluaciones. Publica eventos en SQS. Valida JWT con clave pública de ms-auth.")
+    Container(orchestrator, "ms-credit-evaluation", "Java 21 + Quarkus 3.x", "Valida cédula (Módulo 10). Orquesta llamadas a Riesgos. Aplica reglas de negocio. Persiste evaluaciones. Publica EvaluacionCompletada en SQS.")
     Container(risk_service, "ms-risk", "Java 21 + Quarkus 3.x", "Expone score aleatorio (0-100) y lista de deudas por cédula. Simula latencia de 2s y 1.5s.")
-    ContainerDb(credit_db, "Base de Datos Créditos", "PostgreSQL 16 (creditos_db)", "Almacena evaluaciones y notificaciones.")
-    Container(notif_worker, "Notification Worker", "Quarkus Scheduler (embebido en ms-credit-evaluation)", "Consume mensajes de SQS. Envía emails via AWS SES. Registra estado de envío.")
+    ContainerDb(credit_db, "Base de Datos Créditos", "PostgreSQL 16 (creditos_db)", "Almacena evaluaciones de crédito.")
+  }
+
+  System_Boundary(notif_system, "Sistema de Notificaciones") {
+    Container(notif_service, "ms-notifications", "Java 21 + Quarkus 3.x, AWS SDK v2", "Consume mensajes SQS. Envía emails via AWS SES. Gestiona estado de notificaciones.")
+    ContainerDb(notif_db, "Base de Datos Notificaciones", "PostgreSQL 16 (notifications_db)", "Almacena el estado de cada notificación enviada.")
   }
 
   System_Ext(aws_sqs, "AWS SQS", "Cola: credit-evaluation-notifications. DLQ: credit-eval-notif-dlq.")
@@ -36,14 +40,14 @@ C4Container
   Rel(auth_service, auth_db, "Persiste usuarios y roles", "JDBC / Hibernate Panache")
   Rel(frontend, orchestrator, "API calls", "HTTPS / REST + Bearer JWT")
   Rel(orchestrator, risk_service, "GET score y deudas (paralelo)", "HTTP REST")
-  Rel(orchestrator, credit_db, "Persiste evaluaciones y notificaciones", "JDBC / Hibernate Panache")
+  Rel(orchestrator, credit_db, "Persiste evaluaciones", "JDBC / Hibernate Panache")
   Rel(orchestrator, aws_sqs, "Publica EvaluacionCompletada", "AWS SDK v2 / HTTPS")
-  Rel(notif_worker, aws_sqs, "Consume mensajes (polling)", "AWS SDK v2 / HTTPS")
-  Rel(notif_worker, credit_db, "Actualiza estado de notificación", "JDBC / Hibernate Panache")
-  Rel(notif_worker, aws_ses, "Envía email al solicitante", "AWS SDK v2 / HTTPS")
+  Rel(notif_service, aws_sqs, "Consume mensajes (polling)", "AWS SDK v2 / HTTPS")
+  Rel(notif_service, notif_db, "Persiste estado de notificación", "JDBC / Hibernate Panache")
+  Rel(notif_service, aws_ses, "Envía email al solicitante", "AWS SDK v2 / HTTPS")
   Rel(aws_ses, solicitante, "Entrega email", "SMTP")
 
-  UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="2")
+  UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="3")
 ```
 
 ---
@@ -51,64 +55,61 @@ C4Container
 ## Diagrama ASCII — Vista de Contenedores
 
 ```
- ┌──────────────────────────────────────────────────────────────────────────────┐
- │                   SISTEMA DE IDENTIDAD Y ACCESO (ms-auth)                    │
- │                                                                              │
- │  ┌──────────────────────────────────────────────────────────────────────┐   │
- │  │  ms-auth  :8082                                                      │   │
- │  │  • POST /v1/auth/login                                               │   │
- │  │  • POST /v1/auth/users           (solo ADMIN)                        │   │
- │  │  • GET  /v1/auth/users           (solo ADMIN)                        │   │
- │  │  • GET  /v1/auth/users/{id}      (solo ADMIN)                        │   │
- │  │  • PUT  /v1/auth/users/{id}/roles (solo ADMIN)                       │   │
- │  │  • GET  /v1/auth/public-key       (público — PEM de clave pública)   │   │
- │  └─────────────────────────────┬────────────────────────────────────────┘   │
- │                                │ JDBC                                        │
- │  ┌─────────────────────────────▼────────────────────────────────────────┐   │
- │  │  PostgreSQL 16 — auth_db                                             │   │
- │  │  • users  • roles  • user_roles                                      │   │
- │  └──────────────────────────────────────────────────────────────────────┘   │
- └──────────────────────────────────────────────────────────────────────────────┘
-                       │ JWT (Bearer token)
-                       ▼
- ┌──────────────────────────────────────────────────────────────────────────────┐
- │                    SISTEMA DE EVALUACIÓN DE CRÉDITOS                         │
- │                                                                              │
- │  ┌────────────────┐  HTTPS/REST+JWT  ┌──────────────────────────────────┐   │
- │  │  Frontend SPA  │ ──────────────>  │  ms-credit-evaluation  :8080     │   │
- │  │  React 18      │ <─────────────  │  • POST /v1/credit-evaluations   │   │
- │  │  :3000         │                  │  • GET  /v1/credit-evaluations   │   │
- │  └────────────────┘                  │  • GET  /v1/credit-evaluations   │   │
- │                                      │         /{id}                    │   │
- │                                      │  [valida JWT con clave pública   │   │
- │                                      │   de ms-auth]                    │   │
- │                                      └──────┬──────────────┬────────────┘   │
- │                                             │              │                 │
- │                         HTTP REST (paralelo)│              │ JDBC            │
- │                                             ▼              ▼                 │
- │  ┌──────────────────────────────┐  ┌────────────────────────────────────┐   │
- │  │  ms-risk  :8081              │  │  PostgreSQL 16 — creditos_db       │   │
- │  │  • GET /v1/risk/score/{c}    │  │  • credit_evaluations              │   │
- │  │  • GET /v1/risk/debts/{c}    │  │  • notifications                   │   │
- │  └──────────────────────────────┘  └────────────────────┬───────────────┘   │
- │                                                          ▲                   │
- │                                                          │ JDBC              │
- │                                           ┌──────────────┴──────────┐        │
- │                                           │  Notification Worker    │        │
- │                                           │  (Quarkus Scheduler)    │        │
- │                                           └──────────┬──────────────┘        │
- └──────────────────────────────────────────────────────┼───────────────────────┘
-                                                         │ AWS SDK
-                              ┌──────────────────────────┼──────────────────┐
-                              │            AWS            │                  │
-                              │                           ▼                  │
-                              │               ┌───────────────────┐          │
-                              │               │     AWS SQS       │          │
-                              │               └───────────────────┘          │
-                              │               ┌───────────────────┐          │
-                              │               │     AWS SES       │          │
-                              │               └───────────────────┘          │
-                              └──────────────────────────────────────────────┘
+ ┌──────────────────────────────────────────────────────────────┐
+ │            SISTEMA DE IDENTIDAD Y ACCESO (ms-auth)           │
+ │  ┌──────────────────────────────────────────────────────┐    │
+ │  │  ms-auth  :8082                                      │    │
+ │  │  • POST /v1/auth/login                               │    │
+ │  │  • POST/GET /v1/auth/users  (ADMIN)                  │    │
+ │  │  • PUT  /v1/auth/users/{id}/roles  (ADMIN)           │    │
+ │  │  • GET  /v1/auth/public-key  (público)               │    │
+ │  └───────────────────────┬──────────────────────────────┘    │
+ │                          │ JDBC                               │
+ │  ┌───────────────────────▼──────────────────────────────┐    │
+ │  │  PostgreSQL 16 — auth_db  (users, roles, user_roles) │    │
+ │  └──────────────────────────────────────────────────────┘    │
+ └──────────────────────────────────────────────────────────────┘
+                    │ JWT (Bearer token)
+                    ▼
+ ┌──────────────────────────────────────────────────────────────┐
+ │              SISTEMA DE EVALUACIÓN DE CRÉDITOS               │
+ │  ┌─────────────┐  REST+JWT  ┌─────────────────────────────┐  │
+ │  │ Frontend    │ ─────────> │  ms-credit-evaluation :8080  │  │
+ │  │ React :3000 │ <───────── │  • POST /v1/credit-eval...   │  │
+ │  └─────────────┘            │  • GET  /v1/credit-eval...   │  │
+ │                             │  [valida JWT con clave pub.  │  │
+ │                             │   de ms-auth]                │  │
+ │                             └──────────┬──────────┬────────┘  │
+ │                    HTTP REST (paralelo)│          │ JDBC       │
+ │                                        ▼          ▼            │
+ │  ┌──────────────────────┐  ┌─────────────────────────────┐    │
+ │  │  ms-risk  :8081      │  │  PostgreSQL — creditos_db   │    │
+ │  │  • GET score/{c}     │  │  • credit_evaluations       │    │
+ │  │  • GET debts/{c}     │  └─────────────────────────────┘    │
+ │  └──────────────────────┘                                      │
+ └────────────────────────────────┬─────────────────────────────-┘
+                                  │ AWS SDK (publish)
+                                  ▼
+                           ┌─────────────┐
+                           │   AWS SQS   │
+                           └──────┬──────┘
+                                  │ polling
+                                  ▼
+ ┌──────────────────────────────────────────────────────────────┐
+ │                SISTEMA DE NOTIFICACIONES (ms-notifications)  │
+ │  ┌──────────────────────────────────────────────────────┐    │
+ │  │  ms-notifications  :8083                             │    │
+ │  │  • Quarkus Scheduler — consume SQS cada 20s          │    │
+ │  │  • Envía emails via AWS SES                          │    │
+ │  │  • Idempotencia por evaluacionId                     │    │
+ │  └───────────────────────┬──────────────────────────────┘    │
+ │                          │ JDBC             │ AWS SDK         │
+ │                          ▼                  ▼                 │
+ │  ┌──────────────────────────────┐    ┌─────────────┐         │
+ │  │  PostgreSQL — notifications_db│    │   AWS SES   │         │
+ │  │  • notifications             │    └─────────────┘         │
+ │  └──────────────────────────────┘                            │
+ └──────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -118,13 +119,14 @@ C4Container
 | Contenedor | Tecnología | Puerto | Responsabilidad Principal |
 |------------|-----------|--------|--------------------------|
 | Frontend SPA | React 18, TypeScript, Axios | 3000 | UI de evaluación, login, listado |
-| ms-credit-evaluation | Java 21, Quarkus 3.x, Hibernate Panache | 8080 | API de evaluaciones, validación, reglas de negocio, notificaciones |
+| ms-credit-evaluation | Java 21, Quarkus 3.x, Hibernate Panache | 8080 | API de evaluaciones, validación, reglas de negocio, publicación SQS |
 | ms-risk | Java 21, Quarkus 3.x | 8081 | Score y deudas aleatorios por cédula |
 | ms-auth | Java 21, Quarkus 3.x, SmallRye JWT Build | 8082 | Login, emisión JWT, gestión de usuarios y roles |
-| Base de Datos Créditos (`creditos_db`) | PostgreSQL 16 | 5432 | Evaluaciones y notificaciones (ms-credit-evaluation) |
+| ms-notifications | Java 21, Quarkus 3.x, AWS SDK v2 | 8083 | Consumo SQS, envío email SES, estado de notificaciones |
+| Base de Datos Créditos (`creditos_db`) | PostgreSQL 16 | 5432 | Evaluaciones de crédito (ms-credit-evaluation) |
 | Base de Datos Auth (`auth_db`) | PostgreSQL 16 | 5433 | Usuarios y roles (ms-auth) |
-| Notification Worker | Quarkus Scheduler (embebido en ms-credit-evaluation) | — | Polling SQS + envío email |
-| AWS SQS | AWS Managed | — | Desacoplamiento async de notificaciones |
+| Base de Datos Notificaciones (`notifications_db`) | PostgreSQL 16 | 5434 | Estado de notificaciones (ms-notifications) |
+| AWS SQS | AWS Managed | — | Desacoplamiento async entre ms-credit-evaluation y ms-notifications |
 | AWS SES | AWS Managed | — | Envío de emails transaccionales |
 
 ---
@@ -160,10 +162,11 @@ C4Container
 - No bloquea el tiempo de respuesta al cliente
 - Retry automático con backoff incluido en el SDK
 
-### Notification Worker → AWS SQS: Long Polling
+### ms-notifications → AWS SQS: Long Polling
 - Pull de hasta 10 mensajes cada 20 segundos (`WaitTimeSeconds=20`)
 - Visibility timeout de 60s para procesamiento seguro
 - Delete message solo al confirmar envío exitoso (at-least-once)
+- ms-notifications es completamente autónomo: no llama a ms-credit-evaluation en ningún momento
 
 ---
 
@@ -172,14 +175,16 @@ C4Container
 ```yaml
 # Servicios que se ejecutan localmente
 services:
-  frontend:         # React :3000
-  orchestrator:     # Quarkus ms-credit-evaluation :8080
-  risk-service:     # Quarkus ms-risk :8081
-  auth-service:     # Quarkus ms-auth :8082
-  postgres-credits: # PostgreSQL :5432 — creditos_db
-  postgres-auth:    # PostgreSQL :5433 — auth_db
-  localstack:       # Emulación local de SQS y SES (LocalStack)
+  frontend:              # React :3000
+  orchestrator:          # Quarkus ms-credit-evaluation :8080
+  risk-service:          # Quarkus ms-risk :8081
+  auth-service:          # Quarkus ms-auth :8082
+  notifications-service: # Quarkus ms-notifications :8083
+  postgres-credits:      # PostgreSQL :5432 — creditos_db
+  postgres-auth:         # PostgreSQL :5433 — auth_db
+  postgres-notifications:# PostgreSQL :5434 — notifications_db
+  localstack:            # Emulación local de SQS y SES (LocalStack)
 ```
 
 > En producción, SQS y SES son servicios AWS reales. LocalStack permite desarrollo offline.
-> Los dos contenedores PostgreSQL pueden combinarse en uno solo con dos bases de datos distintas si se prefiere simplificar el entorno local.
+> Los tres contenedores PostgreSQL pueden combinarse en uno solo con bases de datos distintas si se prefiere simplificar el entorno local.

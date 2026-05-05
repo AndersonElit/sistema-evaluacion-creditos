@@ -161,7 +161,7 @@ Rol
 
 ### 3.4 Bounded Context: Notificaciones (`notifications`)
 
-**Responsabilidad:** Comunicar de forma asíncrona el resultado de una evaluación al solicitante vía email.
+**Responsabilidad:** Comunicar de forma asíncrona el resultado de una evaluación al solicitante vía email. Implementado como **microservicio independiente `ms-notifications`** (`localhost:8083`). Consume eventos SQS publicados por `ms-credit-evaluation` sin ningún acoplamiento directo entre ambos.
 
 #### Lenguaje Ubicuo
 
@@ -222,8 +222,8 @@ Notificacion
 │  → Customer/Supplier: ms-credit-evaluation depende de ms-risk como proveedor    │
 │  → Conformist: ms-credit-evaluation acepta el contrato JWT de ms-auth           │
 │  → Published Language: ms-credit-evaluation publica EvaluacionCompletada        │
-│    en SQS, consumida por el Notification Worker                                  │
-│  → ms-auth es autónomo: no llama a ms-credit-evaluation ni ms-risk en runtime   │
+│    en SQS, consumida por ms-notifications                                        │
+│  → ms-auth y ms-notifications son autónomos: no llaman a ms-credit-evaluation   │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -234,7 +234,7 @@ Notificacion
 ```
 [Evaluación de Crédito — ms-credit-evaluation]
   EvaluacionSolicitada ──────────────────────────────────────────────>
-  EvaluacionCompletada ──> [Notificaciones] : publica en SQS
+  EvaluacionCompletada ──> publica en SQS (fire-and-forget)
   EvaluacionFallida    ──> log + respuesta de error al cliente
 
 [Identidad y Acceso — ms-auth]   ← servicio independiente
@@ -242,7 +242,7 @@ Notificacion
   SesionIniciada       ──> emite JWT firmado con clave privada RSA
   SesionExpirada       ──> cliente recibe 401 (validado en ms-credit-evaluation sin llamar a ms-auth)
 
-[Notificaciones — Worker en ms-credit-evaluation]
-  NotificacionEnviada  ──> actualiza estado en creditos_db
+[Notificaciones — ms-notifications]   ← servicio independiente
+  NotificacionEnviada  ──> actualiza estado en notifications_db
   NotificacionFallida  ──> reintento / DLQ
 ```

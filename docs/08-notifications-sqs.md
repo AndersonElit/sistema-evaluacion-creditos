@@ -1,47 +1,52 @@
-# Sistema de Notificaciones — AWS SQS + AWS SES
+# ms-notifications — AWS SQS + AWS SES
 
 ## 1. Visión General
 
-Tras completar una evaluación de crédito, el sistema notifica al solicitante por email (APROBADO o RECHAZADO) de forma **asíncrona** usando una cola SQS como buffer desacoplado y AWS SES como proveedor de envío.
+Tras completar una evaluación de crédito, el sistema notifica al solicitante por email (APROBADO o RECHAZADO) de forma **asíncrona**. `ms-notifications` es un **microservicio independiente** (`localhost:8083`) que consume eventos de una cola SQS y envía emails vía AWS SES. No tiene acoplamiento directo con `ms-credit-evaluation`.
 
 ---
 
 ## 2. Arquitectura de Notificaciones
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                  │
-│  POST /v1/credit-evaluations                                     │
-│         │                                                        │
-│         ▼                                                        │
-│  [ms-credit-evaluation Orquestador]                                              │
-│         │                                                        │
-│         ├── 1. Evalúa crédito (sync)                            │
-│         ├── 2. Persiste en PostgreSQL (sync)                     │
-│         ├── 3. Responde 201 al cliente (sync)    ← rápido       │
-│         │                                                        │
-│         └── 4. Publica mensaje en SQS (async, fire-and-forget)  │
-│                        │                                         │
-│                        ▼                                         │
-│              ┌─────────────────────┐                             │
-│              │   AWS SQS Queue     │                             │
-│              │  credit-eval-notif  │                             │
-│              │  (Standard Queue)   │                             │
-│              └─────────────────────┘                             │
-│                        │                                         │
-│              ┌─────────┘  polling cada 20s                       │
-│              ▼                                                   │
-│  [Notification Worker]  (Quarkus Scheduler)                      │
-│         │                                                        │
-│         ├── 5. Lee mensaje de SQS                               │
-│         ├── 6. Verifica idempotencia en BD                       │
-│         ├── 7. Envía email via AWS SES                           │
-│         ├── 8. Actualiza estado en BD (ENVIADO)                  │
-│         └── 9. Elimina mensaje de SQS (ack)                      │
-│                                                                  │
-│  Si falla 3 veces → DLQ (Dead Letter Queue)                      │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+ ┌──────────────────────────────────────────────────────────────┐
+ │             SISTEMA DE EVALUACIÓN DE CRÉDITOS                │
+ │                                                              │
+ │  POST /v1/credit-evaluations                                 │
+ │         │                                                    │
+ │         ▼                                                    │
+ │  [ms-credit-evaluation :8080]                                │
+ │         │                                                    │
+ │         ├── 1. Evalúa crédito (sync)                        │
+ │         ├── 2. Persiste en creditos_db (sync)                │
+ │         ├── 3. Responde 201 al cliente (sync)  ← rápido     │
+ │         │                                                    │
+ │         └── 4. Publica EvaluacionCompletada en SQS (async)  │
+ │                        (fire-and-forget)                     │
+ └──────────────────────────────────┬───────────────────────────┘
+                                    │ AWS SDK v2
+                                    ▼
+                          ┌──────────────────────┐
+                          │      AWS SQS          │
+                          │ credit-eval-notif     │
+                          │ (Standard Queue)      │
+                          └──────────┬───────────┘
+                                     │ polling cada 20s
+                                     ▼
+ ┌──────────────────────────────────────────────────────────────┐
+ │             SISTEMA DE NOTIFICACIONES                        │
+ │                                                              │
+ │  [ms-notifications :8083]  (Quarkus Scheduler)              │
+ │         │                                                    │
+ │         ├── 5. Lee mensajes de SQS (long polling)           │
+ │         ├── 6. Verifica idempotencia en notifications_db     │
+ │         ├── 7. Envía email via AWS SES                       │
+ │         ├── 8. Actualiza estado en notifications_db (ENVIADO)│
+ │         └── 9. Elimina mensaje de SQS (ack)                  │
+ │                                                              │
+ │  Si falla 3 veces → DLQ (Dead Letter Queue)                  │
+ │                                                              │
+ └──────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -110,7 +115,7 @@ La DLQ retiene mensajes fallidos por **14 días** para revisión manual o reinte
 
 ## 5. Publicación desde ms-credit-evaluation
 
-### Dependencias (`pom.xml`)
+### Dependencias (`pom.xml` — ms-credit-evaluation)
 
 ```xml
 <dependency>
@@ -132,17 +137,12 @@ public class SqsNotificationPublisher {
 
     @Inject ObjectMapper objectMapper;
 
-    private final SqsClient sqsClient;
-    private final String queueUrl;
-
     @ConfigProperty(name = "aws.sqs.queue.url")
     String sqsQueueUrl;
 
-    public SqsNotificationPublisher() {
-        this.sqsClient = SqsClient.builder()
-            .region(Region.US_EAST_1)
-            .build();
-    }
+    private final SqsClient sqsClient = SqsClient.builder()
+        .region(Region.US_EAST_1)
+        .build();
 
     public void publicar(EvaluacionCompletadaEvent evento) {
         try {
@@ -151,8 +151,6 @@ public class SqsNotificationPublisher {
             SendMessageRequest request = SendMessageRequest.builder()
                 .queueUrl(sqsQueueUrl)
                 .messageBody(body)
-                // MessageGroupId para FIFO (si se cambia a FIFO queue)
-                .messageDeduplicationId(evento.getEvaluacionId().toString())
                 .build();
 
             SendMessageResponse response = sqsClient.sendMessage(request);
@@ -193,13 +191,40 @@ public EvaluacionCreditoResponse evaluar(SolicitudCreditoRequest request, String
 
 ---
 
-## 6. Notification Worker (Consumer)
+## 6. Consumer en ms-notifications
 
-### `NotificationWorker.java`
+### Dependencias (`pom.xml` — ms-notifications)
+
+```xml
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-scheduler</artifactId>
+</dependency>
+<dependency>
+    <groupId>software.amazon.awssdk</groupId>
+    <artifactId>sqs</artifactId>
+    <version>2.25.0</version>
+</dependency>
+<dependency>
+    <groupId>software.amazon.awssdk</groupId>
+    <artifactId>ses</artifactId>
+    <version>2.25.0</version>
+</dependency>
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-hibernate-orm-panache</artifactId>
+</dependency>
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-jdbc-postgresql</artifactId>
+</dependency>
+```
+
+### `NotificationConsumer.java`
 
 ```java
 @ApplicationScoped
-public class NotificationWorker {
+public class NotificationConsumer {
 
     @Inject SqsClient sqsClient;
     @Inject EmailSenderService emailSender;
@@ -226,7 +251,7 @@ public class NotificationWorker {
                 eliminarMensaje(message.receiptHandle());
             } catch (Exception e) {
                 log.errorf(e, "Error procesando mensaje SQS: %s", message.messageId());
-                // No eliminar: SQS reintentará automáticamente
+                // No eliminar: SQS reintentará automáticamente hasta maxReceiveCount
             }
         }
     }
@@ -243,10 +268,10 @@ public class NotificationWorker {
             return;
         }
 
-        // Persistir notificación en estado PENDIENTE
+        // Persistir notificación en estado PENDIENTE en notifications_db
         Notification notif = crearNotificacion(evento, message.messageId());
 
-        // Enviar email
+        // Enviar email via SES
         emailSender.enviar(
             evento.getDestinatarioEmail(),
             evento.getEstadoFinal(),
@@ -254,7 +279,7 @@ public class NotificationWorker {
             evento.getFechaEvaluacion()
         );
 
-        // Actualizar estado
+        // Actualizar estado a ENVIADO
         notif.setEstado(EstadoNotificacion.ENVIADO);
         notif.setEnviadoEn(Instant.now());
         notificationRepo.persist(notif);
@@ -273,16 +298,6 @@ public class NotificationWorker {
 
 ## 7. Envío de Email con AWS SES
 
-### Dependencias
-
-```xml
-<dependency>
-    <groupId>software.amazon.awssdk</groupId>
-    <artifactId>ses</artifactId>
-    <version>2.25.0</version>
-</dependency>
-```
-
 ### `EmailSenderService.java`
 
 ```java
@@ -300,8 +315,8 @@ public class EmailSenderService {
                        BigDecimal monto, Instant fecha) {
 
         String asunto = estado.equals("APROBADO")
-            ? "✅ Su solicitud de crédito fue APROBADA"
-            : "❌ Su solicitud de crédito fue RECHAZADA";
+            ? "Su solicitud de crédito fue APROBADA"
+            : "Su solicitud de crédito fue RECHAZADA";
 
         String cuerpoHtml = generarPlantilla(estado, monto, fecha);
 
@@ -324,7 +339,7 @@ public class EmailSenderService {
             return """
                 <html>
                 <body style="font-family: Arial, sans-serif; padding: 20px;">
-                  <h2 style="color: #27ae60;">✅ ¡Felicitaciones! Su crédito fue APROBADO</h2>
+                  <h2 style="color: #27ae60;">Felicitaciones — Su crédito fue APROBADO</h2>
                   <p>Su solicitud de crédito por <strong>$%,.2f USD</strong> ha sido aprobada.</p>
                   <p>Fecha de evaluación: <strong>%s</strong></p>
                   <p>Un asesor se pondrá en contacto con usted para continuar el proceso.</p>
@@ -339,7 +354,7 @@ public class EmailSenderService {
             return """
                 <html>
                 <body style="font-family: Arial, sans-serif; padding: 20px;">
-                  <h2 style="color: #e74c3c;">❌ Su solicitud de crédito fue RECHAZADA</h2>
+                  <h2 style="color: #e74c3c;">Su solicitud de crédito fue RECHAZADA</h2>
                   <p>Lamentablemente su solicitud por <strong>$%,.2f USD</strong> no pudo ser aprobada
                      en este momento.</p>
                   <p>Fecha de evaluación: <strong>%s</strong></p>
@@ -360,15 +375,43 @@ public class EmailSenderService {
 
 ## 8. Configuración (`application.properties`)
 
+### ms-credit-evaluation (publisher)
+
 ```properties
-# ── AWS SQS ──────────────────────────────────────────────────
+quarkus.http.port=8080
+
+# ── AWS SQS — solo publicación ───────────────────────────────
+aws.sqs.queue.url=${SQS_QUEUE_URL:http://localhost:4566/000000000000/credit-evaluation-notifications}
+aws.region=${AWS_REGION:us-east-1}
+aws.accessKeyId=${AWS_ACCESS_KEY_ID:test}
+aws.secretAccessKey=${AWS_SECRET_ACCESS_KEY:test}
+
+# ── LocalStack para desarrollo ───────────────────────────────
+%dev.quarkus.aws.sqs.endpoint-override=http://localhost:4566
+```
+
+### ms-notifications (consumer + email sender)
+
+```properties
+quarkus.http.port=8083
+
+# ── Datasource — notifications_db ────────────────────────────
+quarkus.datasource.db-kind=postgresql
+quarkus.datasource.username=${NOTIF_DB_USERNAME:postgres}
+quarkus.datasource.password=${NOTIF_DB_PASSWORD:postgres}
+quarkus.datasource.jdbc.url=jdbc:postgresql://${NOTIF_DB_HOST:localhost}:5434/notifications_db
+
+quarkus.hibernate-orm.database.generation=validate
+quarkus.flyway.migrate-at-start=true
+quarkus.flyway.locations=classpath:db/migration
+
+# ── AWS SQS — consumo ────────────────────────────────────────
 aws.sqs.queue.url=${SQS_QUEUE_URL:http://localhost:4566/000000000000/credit-evaluation-notifications}
 aws.region=${AWS_REGION:us-east-1}
 
-# ── AWS SES ──────────────────────────────────────────────────
+# ── AWS SES — envío de emails ────────────────────────────────
 aws.ses.from.email=${SES_FROM_EMAIL:noreply@banco.com}
 
-# ── AWS Credentials (usar IAM Role en producción) ─────────────
 aws.accessKeyId=${AWS_ACCESS_KEY_ID:test}
 aws.secretAccessKey=${AWS_SECRET_ACCESS_KEY:test}
 
@@ -383,15 +426,38 @@ aws.secretAccessKey=${AWS_SECRET_ACCESS_KEY:test}
 
 ```yaml
 # docker-compose.yml (fragmento)
-localstack:
-  image: localstack/localstack:3.0
-  ports:
-    - "4566:4566"
-  environment:
-    SERVICES: sqs,ses
-    DEFAULT_REGION: us-east-1
-  volumes:
-    - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh
+services:
+  notifications-service:
+    image: ms-notifications:latest
+    ports:
+      - "8083:8083"
+    environment:
+      NOTIF_DB_HOST: postgres-notifications
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/credit-evaluation-notifications
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    depends_on:
+      - postgres-notifications
+      - localstack
+
+  postgres-notifications:
+    image: postgres:16
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_DB: notifications_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+
+  localstack:
+    image: localstack/localstack:3.0
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: sqs,ses
+      DEFAULT_REGION: us-east-1
+    volumes:
+      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh
 ```
 
 ```bash
@@ -412,7 +478,9 @@ echo "LocalStack SQS + SES inicializado"
 
 ---
 
-## 10. Política IAM para el Microservicio (Producción)
+## 10. Política IAM (Producción)
+
+### ms-credit-evaluation — solo publicación en SQS
 
 ```json
 {
@@ -421,12 +489,19 @@ echo "LocalStack SQS + SES inicializado"
     {
       "Sid": "SQSPublish",
       "Effect": "Allow",
-      "Action": [
-        "sqs:SendMessage",
-        "sqs:GetQueueUrl"
-      ],
+      "Action": ["sqs:SendMessage", "sqs:GetQueueUrl"],
       "Resource": "arn:aws:sqs:us-east-1:*:credit-evaluation-notifications"
-    },
+    }
+  ]
+}
+```
+
+### ms-notifications — consumo SQS + envío SES
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
     {
       "Sid": "SQSConsume",
       "Effect": "Allow",
@@ -459,12 +534,11 @@ echo "LocalStack SQS + SES inicializado"
 | Métrica | Herramienta | Alarma sugerida |
 |---------|------------|-----------------|
 | Mensajes en DLQ > 0 | CloudWatch | Alerta inmediata |
-| Antigüedad mensajes > 30min | CloudWatch | Revisar worker |
+| Antigüedad mensajes > 30min | CloudWatch | Revisar ms-notifications |
 | Tasa de error SES > 5% | CloudWatch | Revisar plantillas/dominio |
-| Mensajes en cola > 100 | CloudWatch | Escalar workers |
+| Mensajes en cola > 100 | CloudWatch | Escalar instancias de ms-notifications |
 
 ```bash
-# Comandos útiles de monitoreo
 # Ver mensajes pendientes
 aws sqs get-queue-attributes \
   --queue-url $QUEUE_URL \

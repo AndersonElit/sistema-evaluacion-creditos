@@ -2,7 +2,7 @@
 
 ## Descripción General
 
-Mini-ecosistema de evaluación de créditos compuesto por un Frontend React, un Microservicio Orquestador (A), un Microservicio de Riesgos Mock (B), un Microservicio de Autenticación/Identidad (C) y un sistema de Notificaciones por correo vía AWS SQS. Todo el backend en **Java Quarkus**.
+Mini-ecosistema de evaluación de créditos compuesto por un Frontend React y cuatro microservicios Java Quarkus: `ms-credit-evaluation` (orquestador), `ms-risk` (riesgos mock), `ms-auth` (identidad) y `ms-notifications` (notificaciones asíncronas por email vía AWS SQS/SES).
 
 ---
 
@@ -30,11 +30,14 @@ Mini-ecosistema de evaluación de créditos compuesto por un Frontend React, un 
 | ms-credit-evaluation | Java 21, Quarkus 3.x, Hibernate ORM Panache |
 | ms-risk | Java 21, Quarkus 3.x |
 | ms-auth | Java 21, Quarkus 3.x, SmallRye JWT Build |
+| ms-notifications | Java 21, Quarkus 3.x, AWS SDK v2 |
 | Base de Datos (ms-credit-evaluation) | PostgreSQL 16 — `creditos_db` |
 | Base de Datos (ms-auth) | PostgreSQL 16 — `auth_db` |
+| Base de Datos (ms-notifications) | PostgreSQL 16 — `notifications_db` |
 | Mensajería | AWS SQS + AWS SES |
 | Comunicación ms-credit-evaluation ↔ ms-risk | REST (HTTP/1.1) + MicroProfile REST Client |
 | Comunicación ms-credit-evaluation ↔ ms-auth | Ninguna en runtime — JWT validado con clave pública compartida |
+| Comunicación ms-credit-evaluation → ms-notifications | Asíncrona vía AWS SQS (fire-and-forget) |
 | Contenedores | Docker + Docker Compose |
 
 ---
@@ -43,14 +46,14 @@ Mini-ecosistema de evaluación de créditos compuesto por un Frontend React, un 
 
 ```
 [React UI] ──REST──> [ms-auth :8082] ──JWT──> [React UI]
-                                                   │
+                                                    │
 [React UI] ──REST+JWT──> [ms-credit-evaluation :8080] ──REST──> [ms-risk :8081]
-                                    │
-                               [creditos_db]
-                                    │
-                               [AWS SQS] ──consume──> [Notification Worker]
-                                                               │
-                                                         [AWS SES / Email]
+                                    │                                
+                               [creditos_db]                     
+                                    │                                
+                               [AWS SQS] ──consume──> [ms-notifications :8083]
+                                                               │          │
+                                                         [AWS SES]  [notifications_db]
 
 [ms-auth] ──escribe──> [auth_db]
 ```
@@ -73,8 +76,10 @@ Mini-ecosistema de evaluación de créditos compuesto por un Frontend React, un 
 - Sin gestión de usuarios ni emisión de tokens
 - Base de datos propia: `creditos_db`
 
-### Notificaciones por Email (SQS)
-- Al completar una evaluación, ms-credit-evaluation publica un mensaje en una cola SQS
-- Un worker (Quarkus scheduler) consume la cola y envía email vía AWS SES
-- Notifica al solicitante: crédito **APROBADO** o **RECHAZADO**
-- Dead Letter Queue (DLQ) para mensajes fallidos
+### ms-notifications (desacoplado)
+- Microservicio independiente dedicado a notificaciones por email
+- Consume mensajes de AWS SQS de forma autónoma (Quarkus Scheduler)
+- Envía emails vía AWS SES con el resultado de la evaluación (APROBADO / RECHAZADO)
+- Gestiona el estado de cada notificación en su propia base de datos (`notifications_db`)
+- Dead Letter Queue (DLQ) para mensajes fallidos tras 3 intentos
+- `ms-credit-evaluation` solo publica en SQS — no conoce a `ms-notifications`

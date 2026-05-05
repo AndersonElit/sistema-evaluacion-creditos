@@ -262,15 +262,51 @@ Si ms-risk falla repetidamente, el Circuit Breaker abre y se retorna 503 al clie
 
 ---
 
+## ADR-009: Desacoplamiento de Notificaciones en Microservicio Independiente (ms-notifications)
+
+**Estado:** Aceptado  
+**Fecha:** 2026-05-05  
+**Contexto:** Originalmente, el Notification Worker estaba embebido dentro de `ms-credit-evaluation`. Se evaluó si extraer esta responsabilidad a un servicio propio aportaba beneficios reales dado el alcance del sistema.
+
+### Opciones evaluadas
+
+| Criterio | Worker embebido en ms-credit-evaluation | ms-notifications independiente |
+|----------|:---:|:---:|
+| Responsabilidad única (SRP) | ❌ ms-credit-evaluation mezcla evaluación y notificaciones | ✅ cada servicio tiene un propósito claro |
+| Escalabilidad independiente | ❌ escala todo junto | ✅ ms-notifications puede escalar según volumen de emails |
+| Fallos aislados | ❌ un fallo en el worker puede afectar al orquestador | ✅ fallo en ms-notifications no impacta las evaluaciones |
+| Despliegue independiente | ❌ requiere redesplegar ms-credit-evaluation | ✅ se actualiza sin tocar el orquestador |
+| Aislamiento de BD | ❌ notificaciones y evaluaciones en la misma BD | ✅ `notifications_db` separada de `creditos_db` |
+| Acoplamiento en runtime | — | ✅ cero: ms-notifications solo consume SQS, no llama a ms-credit-evaluation |
+| Complejidad operacional | Baja (1 servicio menos) | Media (un contenedor más, una BD más) |
+
+### Decisión
+**ms-notifications independiente** por las siguientes razones:
+
+1. **Separación de responsabilidades:** El orquestador de créditos debe tener una única responsabilidad: evaluar créditos y persistir el resultado. La lógica de notificación (consumo SQS, plantillas email, reintentos, DLQ) es un dominio distinto (Supporting) que no debe contaminar el Core Domain.
+2. **Acoplamiento cero en runtime:** `ms-credit-evaluation` solo publica un evento en SQS y no conoce la existencia de `ms-notifications`. Si `ms-notifications` cae, las evaluaciones siguen funcionando y los mensajes se acumulan en SQS hasta que el consumer se recupere.
+3. **Resiliencia aislada:** Los reintentos, el manejo de DLQ y los fallos de AWS SES están contenidos en `ms-notifications`. Un pico de errores de email no impacta el tiempo de respuesta del endpoint de evaluación.
+4. **Base de datos aislada:** `notifications_db` evoluciona de forma independiente. La columna `notificacion_enviada` en `credit_evaluations` es innecesaria gracias al índice único en `notifications.evaluacion_id`.
+5. **Escalabilidad diferenciada:** En períodos de alta carga, se pueden escalar instancias de `ms-notifications` sin tocar `ms-credit-evaluation` ni `ms-risk`.
+
+### Consecuencias
+- Se agrega un contenedor (`ms-notifications :8083`) y una base de datos (`notifications_db :5434`) al Docker Compose.
+- La idempotencia se garantiza vía `UNIQUE INDEX idx_notifications_evaluacion_unique ON notifications(evaluacion_id)`.
+- `ms-credit-evaluation` ya no gestiona el estado de notificaciones; elimina la columna `notificacion_enviada`.
+- La política IAM se divide: ms-credit-evaluation tiene permisos de publicación en SQS; ms-notifications tiene permisos de consumo SQS y envío SES.
+
+---
+
 ## Resumen de Decisiones
 
 | ID | Decisión | Alternativa Descartada | Razón Principal |
 |----|----------|----------------------|-----------------|
 | ADR-001 | Quarkus 3.x | Spring Boot | MicroProfile nativo, bajo footprint |
-| ADR-002 | REST para A↔B | gRPC | Simplicidad, latencia dominada por mock |
+| ADR-002 | REST para ms-credit-evaluation ↔ ms-risk | gRPC | Simplicidad, latencia dominada por mock |
 | ADR-003 | PostgreSQL | MongoDB | Modelo relacional, ACID, datos financieros |
 | ADR-004 | JWT Stateless | Keycloak | Sin overhead de servicio externo |
 | ADR-005 | AWS SQS | Llamada directa | Desacoplamiento, resiliencia, DLQ |
 | ADR-006 | Módulo 10 custom | Regex simple | Validación matemática real de cédulas |
-| ADR-007 | Llamadas paralelas | Secuencial | 43% menos latencia por request |
+| ADR-007 | Llamadas paralelas a ms-risk | Secuencial | 43% menos latencia por request |
 | ADR-008 | Auth en ms-auth independiente | Auth embebida en ms-credit-evaluation | SRP, aislamiento de BD, cero acoplamiento runtime |
+| ADR-009 | Notificaciones en ms-notifications independiente | Worker embebido en ms-credit-evaluation | SRP, resiliencia aislada, escalabilidad diferenciada |
