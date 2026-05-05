@@ -33,7 +33,7 @@ que orquesta todo aplicando la regla de negocio.
 
 ### `SolicitudCreditoCommand.java`
 ```java
-package com.mscreditevaluation.usecases;
+package com.mscreditevaluation.usecases.command;
 
 import java.math.BigDecimal;
 import java.util.UUID;
@@ -50,9 +50,9 @@ public record SolicitudCreditoCommand(
 
 ### `EvaluacionCreditoResult.java`
 ```java
-package com.mscreditevaluation.usecases;
+package com.mscreditevaluation.usecases.result;
 
-import com.mscreditevaluation.model.EvaluacionCredito;
+import com.mscreditevaluation.model.entity.EvaluacionCredito;
 
 public record EvaluacionCreditoResult(EvaluacionCredito evaluacion) {}
 ```
@@ -63,7 +63,17 @@ public record EvaluacionCreditoResult(EvaluacionCredito evaluacion) {}
 ```java
 package com.mscreditevaluation.usecases;
 
-import com.mscreditevaluation.model.*;
+import com.mscreditevaluation.model.entity.EstadoEvaluacion;
+import com.mscreditevaluation.model.entity.EvaluacionCredito;
+import com.mscreditevaluation.model.port.EvaluacionCreditoRepository;
+import com.mscreditevaluation.model.port.NotificationPort;
+import com.mscreditevaluation.model.port.RiskServicePort;
+import com.mscreditevaluation.model.valueobject.Cedula;
+import com.mscreditevaluation.model.valueobject.Dinero;
+import com.mscreditevaluation.model.valueobject.ScoreRiesgo;
+import com.mscreditevaluation.usecases.command.SolicitudCreditoCommand;
+import com.mscreditevaluation.usecases.exception.EvaluacionNotFoundException;
+import com.mscreditevaluation.usecases.result.EvaluacionCreditoResult;
 import io.smallrye.mutiny.Uni;
 import io.smallrye.mutiny.infrastructure.Infrastructure;
 
@@ -129,7 +139,7 @@ public class EvaluarCreditoUseCase {
 
 ### `EvaluacionNotFoundException.java`
 ```java
-package com.mscreditevaluation.usecases;
+package com.mscreditevaluation.usecases.exception;
 
 import java.util.UUID;
 
@@ -144,7 +154,7 @@ public class EvaluacionNotFoundException extends RuntimeException {
 
 ### `RiskServiceClient.java` (interface MicroProfile)
 ```java
-package com.mscreditevaluation.postgres;
+package com.mscreditevaluation.postgres.repository;
 
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
@@ -186,9 +196,9 @@ public interface RiskServiceClient {
 
 ### `RiskServiceAdapter.java` — Implementa `RiskServicePort` con llamadas paralelas
 ```java
-package com.mscreditevaluation.postgres;
+package com.mscreditevaluation.postgres.repository;
 
-import com.mscreditevaluation.model.RiskServicePort;
+import com.mscreditevaluation.model.port.RiskServicePort;
 import io.smallrye.mutiny.Uni;
 import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -230,7 +240,7 @@ public class RiskServiceAdapter implements RiskServicePort {
 
 ### `RiskServiceUnavailableException.java`
 ```java
-package com.mscreditevaluation.postgres;
+package com.mscreditevaluation.postgres.repository;
 
 public class RiskServiceUnavailableException extends RuntimeException {
     public RiskServiceUnavailableException(String message, Throwable cause) {
@@ -243,11 +253,11 @@ public class RiskServiceUnavailableException extends RuntimeException {
 
 ### `SqsNotificationPublisher.java`
 ```java
-package com.mscreditevaluation.sqsproducer;
+package com.mscreditevaluation.sqsproducer.adapter;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.mscreditevaluation.model.EvaluacionCredito;
-import com.mscreditevaluation.model.NotificationPort;
+import com.mscreditevaluation.model.entity.EvaluacionCredito;
+import com.mscreditevaluation.model.port.NotificationPort;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -359,7 +369,13 @@ Ubicación: `application/use-cases/src/test/java/com/mscreditevaluation/usecases
 ```java
 package com.mscreditevaluation.usecases;
 
-import com.mscreditevaluation.model.*;
+import com.mscreditevaluation.model.entity.EstadoEvaluacion;
+import com.mscreditevaluation.model.entity.EvaluacionCredito;
+import com.mscreditevaluation.model.port.EvaluacionCreditoRepository;
+import com.mscreditevaluation.model.port.NotificationPort;
+import com.mscreditevaluation.model.port.RiskServicePort;
+import com.mscreditevaluation.usecases.command.SolicitudCreditoCommand;
+import com.mscreditevaluation.usecases.result.EvaluacionCreditoResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;

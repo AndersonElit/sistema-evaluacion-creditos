@@ -23,7 +23,7 @@ Resultado: carpeta `ms-risk/` con estructura Maven multimódulo hexagonal.
 
 ### `RiskProfile.java`
 ```java
-package com.msrisk.model;
+package com.msrisk.model.entity;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -41,7 +41,7 @@ public record RiskProfile(String cedula, int score, List<Debt> debts) {
 
 ### `Debt.java`
 ```java
-package com.msrisk.model;
+package com.msrisk.model.entity;
 
 import java.math.BigDecimal;
 import java.util.UUID;
@@ -53,7 +53,9 @@ public record Debt(UUID id, String description, BigDecimal monthlyPayment) {}
 
 ### `RiskPort.java`
 ```java
-package com.msrisk.model;
+package com.msrisk.model.port;
+
+import com.msrisk.model.entity.RiskProfile;
 
 public interface RiskPort {
     int getScore(String cedula);
@@ -67,8 +69,8 @@ public interface RiskPort {
 ```java
 package com.msrisk.usecases;
 
-import com.msrisk.model.RiskPort;
-import com.msrisk.model.RiskProfile;
+import com.msrisk.model.entity.RiskProfile;
+import com.msrisk.model.port.RiskPort;
 
 public class GetRiskProfileUseCase {
 
@@ -95,11 +97,11 @@ public class GetRiskProfileUseCase {
 
 ### `MockRiskAdapter.java`
 ```java
-package com.msrisk.postgres; // o mockrisk
+package com.msrisk.postgres.repository;
 
-import com.msrisk.model.Debt;
-import com.msrisk.model.RiskPort;
-import com.msrisk.model.RiskProfile;
+import com.msrisk.model.entity.Debt;
+import com.msrisk.model.entity.RiskProfile;
+import com.msrisk.model.port.RiskPort;
 import jakarta.enterprise.context.ApplicationScoped;
 
 import java.math.BigDecimal;
@@ -148,7 +150,7 @@ public class MockRiskAdapter implements RiskPort {
 
 ### `ScoreResponse.java`
 ```java
-package com.msrisk.restapi;
+package com.msrisk.restapi.dto;
 
 import java.time.Instant;
 
@@ -157,7 +159,7 @@ public record ScoreResponse(String cedula, int score, Instant timestamp) {}
 
 ### `DebtDto.java`
 ```java
-package com.msrisk.restapi;
+package com.msrisk.restapi.dto;
 
 import java.math.BigDecimal;
 import java.util.UUID;
@@ -167,7 +169,7 @@ public record DebtDto(UUID id, String descripcion, BigDecimal mensualidad) {}
 
 ### `DeudasResponse.java`
 ```java
-package com.msrisk.restapi;
+package com.msrisk.restapi.dto;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -181,9 +183,12 @@ public record DeudasResponse(String cedula, List<DebtDto> deudas,
 
 ### `RiskResource.java`
 ```java
-package com.msrisk.restapi;
+package com.msrisk.restapi.resource;
 
-import com.msrisk.model.RiskPort;
+import com.msrisk.model.port.RiskPort;
+import com.msrisk.restapi.dto.DebtDto;
+import com.msrisk.restapi.dto.DeudasResponse;
+import com.msrisk.restapi.dto.ScoreResponse;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -234,8 +239,8 @@ public class RiskResource {
 ```java
 package com.msrisk;
 
-import com.msrisk.model.RiskPort;
-import com.msrisk.postgres.MockRiskAdapter;
+import com.msrisk.model.port.RiskPort;
+import com.msrisk.postgres.repository.MockRiskAdapter;
 import com.msrisk.usecases.GetRiskProfileUseCase;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
@@ -315,10 +320,10 @@ curl -s http://localhost:8081/q/health | jq .status
 
 ### Pruebas Unitarias — `MockRiskAdapterTest.java`
 
-Ubicación: `infrastructure/driven-adapters/postgres/src/test/java/com/msrisk/postgres/`
+Ubicación: `infrastructure/driven-adapters/postgres/src/test/java/com/msrisk/postgres/repository/`
 
 ```java
-package com.msrisk.postgres;
+package com.msrisk.postgres.repository;
 
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
@@ -368,10 +373,10 @@ class MockRiskAdapterTest {
 
 ### Pruebas de Integración — `RiskResourceIT.java`
 
-Ubicación: `infrastructure/entry-points/rest-api/src/test/java/com/msrisk/restapi/`
+Ubicación: `infrastructure/entry-points/rest-api/src/test/java/com/msrisk/restapi/resource/`
 
 ```java
-package com.msrisk.restapi;
+package com.msrisk.restapi.resource;
 
 import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.Test;

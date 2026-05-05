@@ -19,7 +19,7 @@ completa de `application.properties` (JWT/OIDC, CORS, Swagger).
 
 ### `SolicitudCreditoRequest.java`
 ```java
-package com.mscreditevaluation.restapi;
+package com.mscreditevaluation.restapi.dto;
 
 import jakarta.validation.constraints.*;
 import java.math.BigDecimal;
@@ -49,9 +49,9 @@ public record SolicitudCreditoRequest(
 
 ### `EvaluacionCreditoResponse.java`
 ```java
-package com.mscreditevaluation.restapi;
+package com.mscreditevaluation.restapi.dto;
 
-import com.mscreditevaluation.model.EvaluacionCredito;
+import com.mscreditevaluation.model.entity.EvaluacionCredito;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
@@ -89,10 +89,12 @@ public record EvaluacionCreditoResponse(
 
 ### `CreditEvaluationResource.java`
 ```java
-package com.mscreditevaluation.restapi;
+package com.mscreditevaluation.restapi.resource;
 
+import com.mscreditevaluation.restapi.dto.EvaluacionCreditoResponse;
+import com.mscreditevaluation.restapi.dto.SolicitudCreditoRequest;
 import com.mscreditevaluation.usecases.EvaluarCreditoUseCase;
-import com.mscreditevaluation.usecases.SolicitudCreditoCommand;
+import com.mscreditevaluation.usecases.command.SolicitudCreditoCommand;
 import io.quarkus.security.Authenticated;
 import io.smallrye.jwt.auth.principal.JWTParser;
 import io.smallrye.mutiny.Uni;
@@ -170,11 +172,11 @@ public class CreditEvaluationResource {
 
 ### `GlobalExceptionMapper.java`
 ```java
-package com.mscreditevaluation.restapi;
+package com.mscreditevaluation.restapi.exception;
 
-import com.mscreditevaluation.model.Cedula;
-import com.mscreditevaluation.postgres.RiskServiceUnavailableException;
-import com.mscreditevaluation.usecases.EvaluacionNotFoundException;
+import com.mscreditevaluation.model.valueobject.Cedula;
+import com.mscreditevaluation.postgres.repository.RiskServiceUnavailableException;
+import com.mscreditevaluation.usecases.exception.EvaluacionNotFoundException;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.ext.ExceptionMapper;
@@ -408,10 +410,10 @@ public class WireMockSetup {
 
 ### `CreditEvaluationResourceIT.java`
 
-Ubicación: `infrastructure/entry-points/app/src/test/java/com/mscreditevaluation/restapi/`
+Ubicación: `infrastructure/entry-points/app/src/test/java/com/mscreditevaluation/restapi/resource/`
 
 ```java
-package com.mscreditevaluation.restapi;
+package com.mscreditevaluation.restapi.resource;
 
 import com.mscreditevaluation.WireMockSetup;
 import com.github.tomakehurst.wiremock.WireMockServer;

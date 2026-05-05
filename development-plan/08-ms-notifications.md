@@ -59,7 +59,7 @@ CREATE UNIQUE INDEX idx_notifications_evaluacion_unique
 
 ### `NotificationEntity.java`
 ```java
-package com.msnotifications.postgres;
+package com.msnotifications.postgres.entity;
 
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
@@ -112,7 +112,7 @@ public class NotificationEntity extends PanacheEntityBase {
 
 ### `EvaluacionCompletadaEvent.java`
 ```java
-package com.msnotifications.model;
+package com.msnotifications.model.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.math.BigDecimal;
@@ -136,7 +136,7 @@ public record EvaluacionCompletadaEvent(
 
 ### `EmailSenderService.java`
 ```java
-package com.msnotifications.postgres;
+package com.msnotifications.postgres.repository;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -211,12 +211,12 @@ public class EmailSenderService {
 
 ### `NotificationConsumer.java`
 ```java
-package com.msnotifications.sqsconsumer;
+package com.msnotifications.sqsconsumer.adapter;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.msnotifications.model.EvaluacionCompletadaEvent;
-import com.msnotifications.postgres.EmailSenderService;
-import com.msnotifications.postgres.NotificationEntity;
+import com.msnotifications.model.entity.EvaluacionCompletadaEvent;
+import com.msnotifications.postgres.entity.NotificationEntity;
+import com.msnotifications.postgres.repository.EmailSenderService;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -403,10 +403,10 @@ psql -h localhost -p 5434 -U postgres -d notifications_db \
 
 ### Pruebas Unitarias — `EmailSenderServiceTest.java`
 
-Ubicación: `infrastructure/driven-adapters/postgres/src/test/java/com/msnotifications/postgres/`
+Ubicación: `infrastructure/driven-adapters/postgres/src/test/java/com/msnotifications/postgres/repository/`
 
 ```java
-package com.msnotifications.postgres;
+package com.msnotifications.postgres.repository;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -503,14 +503,14 @@ class EmailSenderServiceTest {
 > `@QuarkusTest` con DevServices PostgreSQL. SQS se inyecta como mock CDI
 > para controlar los mensajes que recibe el consumer sin LocalStack.
 
-Ubicación: `infrastructure/entry-points/sqs-consumer/src/test/java/com/msnotifications/sqsconsumer/`
+Ubicación: `infrastructure/entry-points/sqs-consumer/src/test/java/com/msnotifications/sqsconsumer/adapter/`
 
 ```java
-package com.msnotifications.sqsconsumer;
+package com.msnotifications.sqsconsumer.adapter;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.msnotifications.postgres.EmailSenderService;
-import com.msnotifications.postgres.NotificationEntity;
+import com.msnotifications.postgres.entity.NotificationEntity;
+import com.msnotifications.postgres.repository.EmailSenderService;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;

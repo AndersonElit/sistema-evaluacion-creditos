@@ -55,11 +55,14 @@ public class MavenHexagonalScaffold implements Runnable {
                 String basePackage = "com." + safeProjectName + "." + moduleName;
                 String packagePath = "/src/main/java/" + basePackage.replace(".", "/");
                 Files.createDirectories(rootPath.resolve(module + packagePath));
+                createSubPackages(rootPath, module, basePackage);
 
                 String modulePom = getModulePomTemplate(projectName, safeProjectName, module);
                 Files.writeString(rootPath.resolve(module + "/pom.xml"), modulePom);
 
                 if (module.equals("infrastructure/entry-points/rest-api")) {
+                    String resourcePackage = basePackage + ".resource";
+                    String resourcePath = "/src/main/java/" + resourcePackage.replace(".", "/");
                     String helloResource = String.format("""
 package %s;
 
@@ -78,8 +81,8 @@ public class HelloResource {
         return Uni.createFrom().item("¡Hola desde el scaffold Hexagonal Reactivo con Quarkus!");
     }
 }
-""", basePackage);
-                    Files.writeString(rootPath.resolve(module + packagePath + "/HelloResource.java"), helloResource);
+""", resourcePackage);
+                    Files.writeString(rootPath.resolve(module + resourcePath + "/HelloResource.java"), helloResource);
                 }
 
                 if (module.equals("infrastructure/entry-points/app")) {
@@ -514,10 +517,26 @@ bin/
         return sb.toString();
     }
 
+    private void createSubPackages(Path rootPath, String module, String basePackage) throws IOException {
+        List<String> subPackages = switch (module) {
+            case "domain/model"                              -> List.of("entity", "port", "valueobject");
+            case "application/use-cases"                     -> List.of("command", "result", "exception");
+            case "infrastructure/driven-adapters/postgres"   -> List.of("entity", "repository", "mapper");
+            case "infrastructure/entry-points/rest-api"      -> List.of("dto", "resource", "exception", "mapper");
+            case "infrastructure/driven-adapters/sqs-producer" -> List.of("adapter");
+            case "infrastructure/entry-points/sqs-consumer"  -> List.of("adapter");
+            default -> List.of();
+        };
+        for (String sub : subPackages) {
+            String subPath = "/src/main/java/" + (basePackage + "." + sub).replace(".", "/");
+            Files.createDirectories(rootPath.resolve(module + subPath));
+        }
+    }
+
     private void createSqsProducerFiles(Path rootPath, String safeProjectName) throws IOException {
         String modulePath = "infrastructure/driven-adapters/sqs-producer";
         String moduleName = "sqsproducer";
-        String basePackage = "com." + safeProjectName + "." + moduleName;
+        String basePackage = "com." + safeProjectName + "." + moduleName + ".adapter";
         String packagePath = "/src/main/java/" + basePackage.replace(".", "/");
 
         String publisher = "package " + basePackage + ";\n\n" +
@@ -548,7 +567,7 @@ bin/
     private void createSqsConsumerFiles(Path rootPath, String safeProjectName) throws IOException {
         String modulePath = "infrastructure/entry-points/sqs-consumer";
         String moduleName = "sqsconsumer";
-        String basePackage = "com." + safeProjectName + "." + moduleName;
+        String basePackage = "com." + safeProjectName + "." + moduleName + ".adapter";
         String packagePath = "/src/main/java/" + basePackage.replace(".", "/");
 
         String consumer = "package " + basePackage + ";\n\n" +

@@ -21,7 +21,7 @@ jbang scaffold/MavenHexagonalScaffold.java -n ms-credit-evaluation -m sqs-produc
 
 ### `Cedula.java`
 ```java
-package com.mscreditevaluation.model;
+package com.mscreditevaluation.model.valueobject;
 
 public record Cedula(String valor) {
 
@@ -59,7 +59,7 @@ public record Cedula(String valor) {
 
 ### `Dinero.java`
 ```java
-package com.mscreditevaluation.model;
+package com.mscreditevaluation.model.valueobject;
 
 import java.math.BigDecimal;
 
@@ -92,7 +92,7 @@ public record Dinero(BigDecimal cantidad, String moneda) {
 
 ### `ScoreRiesgo.java`
 ```java
-package com.mscreditevaluation.model;
+package com.mscreditevaluation.model.valueobject;
 
 public record ScoreRiesgo(int valor) {
 
@@ -110,7 +110,7 @@ public record ScoreRiesgo(int valor) {
 
 ### `EstadoEvaluacion.java`
 ```java
-package com.mscreditevaluation.model;
+package com.mscreditevaluation.model.entity;
 
 public enum EstadoEvaluacion {
     APROBADO, RECHAZADO, PENDIENTE
@@ -121,8 +121,11 @@ public enum EstadoEvaluacion {
 
 ### `EvaluacionCredito.java`
 ```java
-package com.mscreditevaluation.model;
+package com.mscreditevaluation.model.entity;
 
+import com.mscreditevaluation.model.valueobject.Cedula;
+import com.mscreditevaluation.model.valueobject.Dinero;
+import com.mscreditevaluation.model.valueobject.ScoreRiesgo;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
@@ -215,8 +218,9 @@ public class EvaluacionCredito {
 
 ### `EvaluacionCreditoRepository.java`
 ```java
-package com.mscreditevaluation.model;
+package com.mscreditevaluation.model.port;
 
+import com.mscreditevaluation.model.entity.EvaluacionCredito;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -230,7 +234,7 @@ public interface EvaluacionCreditoRepository {
 
 ### `RiskServicePort.java`
 ```java
-package com.mscreditevaluation.model;
+package com.mscreditevaluation.model.port;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -243,7 +247,9 @@ public interface RiskServicePort {
 
 ### `NotificationPort.java`
 ```java
-package com.mscreditevaluation.model;
+package com.mscreditevaluation.model.port;
+
+import com.mscreditevaluation.model.entity.EvaluacionCredito;
 
 public interface NotificationPort {
     void publicarEvaluacionCompletada(EvaluacionCredito evaluacion, String destinatarioEmail);
@@ -284,10 +290,10 @@ mvn compile -pl domain/model,application/use-cases
 
 ### `CedulaTest.java`
 
-Ubicación: `domain/model/src/test/java/com/mscreditevaluation/model/`
+Ubicación: `domain/model/src/test/java/com/mscreditevaluation/model/valueobject/`
 
 ```java
-package com.mscreditevaluation.model;
+package com.mscreditevaluation.model.valueobject;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -364,8 +370,10 @@ class CedulaTest {
 
 ### `DineroTest.java`
 
+Ubicación: `domain/model/src/test/java/com/mscreditevaluation/model/valueobject/`
+
 ```java
-package com.mscreditevaluation.model;
+package com.mscreditevaluation.model.valueobject;
 
 import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
@@ -423,8 +431,10 @@ class DineroTest {
 
 ### `ScoreRiesgoTest.java`
 
+Ubicación: `domain/model/src/test/java/com/mscreditevaluation/model/valueobject/`
+
 ```java
-package com.mscreditevaluation.model;
+package com.mscreditevaluation.model.valueobject;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -471,9 +481,14 @@ class ScoreRiesgoTest {
 
 ### `EvaluacionCreditoTest.java` — Regla de Negocio
 
-```java
-package com.mscreditevaluation.model;
+Ubicación: `domain/model/src/test/java/com/mscreditevaluation/model/entity/`
 
+```java
+package com.mscreditevaluation.model.entity;
+
+import com.mscreditevaluation.model.valueobject.Cedula;
+import com.mscreditevaluation.model.valueobject.Dinero;
+import com.mscreditevaluation.model.valueobject.ScoreRiesgo;
 import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 

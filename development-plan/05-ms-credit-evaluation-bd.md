@@ -73,7 +73,7 @@ CREATE INDEX idx_credit_eval_usuario ON credit_evaluations (evaluado_por_id);
 
 ### `CreditEvaluationEntity.java`
 ```java
-package com.mscreditevaluation.postgres;
+package com.mscreditevaluation.postgres.entity;
 
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
@@ -128,9 +128,15 @@ public class CreditEvaluationEntity extends PanacheEntityBase {
 
 ### `CreditEvaluationRepositoryAdapter.java`
 ```java
-package com.mscreditevaluation.postgres;
+package com.mscreditevaluation.postgres.repository;
 
-import com.mscreditevaluation.model.*;
+import com.mscreditevaluation.model.entity.EstadoEvaluacion;
+import com.mscreditevaluation.model.entity.EvaluacionCredito;
+import com.mscreditevaluation.model.port.EvaluacionCreditoRepository;
+import com.mscreditevaluation.model.valueobject.Cedula;
+import com.mscreditevaluation.model.valueobject.Dinero;
+import com.mscreditevaluation.model.valueobject.ScoreRiesgo;
+import com.mscreditevaluation.postgres.entity.CreditEvaluationEntity;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 
@@ -277,12 +283,16 @@ quarkus.hibernate-orm.database.generation=drop-and-create
 
 ### `CreditEvaluationRepositoryIT.java`
 
-Ubicación: `infrastructure/driven-adapters/postgres/src/test/java/com/mscreditevaluation/postgres/`
+Ubicación: `infrastructure/driven-adapters/postgres/src/test/java/com/mscreditevaluation/postgres/repository/`
 
 ```java
-package com.mscreditevaluation.postgres;
+package com.mscreditevaluation.postgres.repository;
 
-import com.mscreditevaluation.model.*;
+import com.mscreditevaluation.model.entity.EstadoEvaluacion;
+import com.mscreditevaluation.model.entity.EvaluacionCredito;
+import com.mscreditevaluation.model.valueobject.Cedula;
+import com.mscreditevaluation.model.valueobject.Dinero;
+import com.mscreditevaluation.model.valueobject.ScoreRiesgo;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
