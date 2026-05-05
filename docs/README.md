@@ -2,7 +2,7 @@
 
 ## Descripción General
 
-Mini-ecosistema de evaluación de créditos compuesto por un Frontend React, un Microservicio Orquestador (A), un Microservicio de Riesgos Mock (B), un módulo de Autenticación/Autorización y un sistema de Notificaciones por correo vía AWS SQS. Todo el backend en **Java Quarkus**.
+Mini-ecosistema de evaluación de créditos compuesto por un Frontend React, un Microservicio Orquestador (A), un Microservicio de Riesgos Mock (B), un Microservicio de Autenticación/Identidad (C) y un sistema de Notificaciones por correo vía AWS SQS. Todo el backend en **Java Quarkus**.
 
 ---
 
@@ -29,10 +29,12 @@ Mini-ecosistema de evaluación de créditos compuesto por un Frontend React, un 
 | Frontend | React 18, TypeScript, Axios |
 | Microservicio A (Orquestador) | Java 21, Quarkus 3.x, Hibernate ORM Panache |
 | Microservicio B (Riesgos) | Java 21, Quarkus 3.x |
-| Auth | Quarkus Security + SmallRye JWT |
-| Base de Datos | PostgreSQL 16 |
+| Microservicio C (Auth/Identidad) | Java 21, Quarkus 3.x, SmallRye JWT Build |
+| Base de Datos A | PostgreSQL 16 — `creditos_db` |
+| Base de Datos C | PostgreSQL 16 — `auth_db` |
 | Mensajería | AWS SQS + AWS SES |
 | Comunicación A↔B | REST (HTTP/1.1) + MicroProfile REST Client |
+| Comunicación A↔C | Ninguna en runtime — JWT validado con clave pública compartida |
 | Contenedores | Docker + Docker Compose |
 
 ---
@@ -40,24 +42,36 @@ Mini-ecosistema de evaluación de créditos compuesto por un Frontend React, un 
 ## Arquitectura en una Línea
 
 ```
-[React UI] ──REST──> [Orquestador A] ──REST──> [Riesgos B]
-                          │                          
-                     [PostgreSQL]              
-                          │                          
-                     [AWS SQS] ──consume──> [Notification Worker]
-                                                     │
-                                               [AWS SES / Email]
+[React UI] ──REST──> [Auth C :8082] ──JWT──> [React UI]
+                                                  │
+[React UI] ──REST+JWT──> [Orquestador A :8080] ──REST──> [Riesgos B :8081]
+                               │
+                          [creditos_db]
+                               │
+                          [AWS SQS] ──consume──> [Notification Worker]
+                                                          │
+                                                    [AWS SES / Email]
+
+[Auth C] ──escribe──> [auth_db]
 ```
 
 ---
 
-## Nuevas Funcionalidades Incluidas
+## Funcionalidades del Sistema
 
-### Login y Gestión de Usuarios
-- JWT stateless con SmallRye JWT en Quarkus
+### Microservicio C — Auth/Identidad (nuevo, desacoplado)
+- Servicio independiente dedicado a identidad y acceso
+- JWT stateless firmado con RS256 (SmallRye JWT Build)
 - Registro de nuevos usuarios (solo por `ADMIN`)
 - Roles: `ADMIN`, `ANALYST`, `VIEWER`
-- Endpoints protegidos por rol vía `@RolesAllowed`
+- Base de datos propia: `auth_db`
+- MS-A valida JWT usando la clave pública de MS-C sin llamarlo en runtime
+
+### Microservicio A — Orquestador (simplificado)
+- Solo responsabilidad: orquestar evaluaciones de crédito
+- Valida JWT con la clave pública compartida de MS-C
+- Sin gestión de usuarios ni emisión de tokens
+- Base de datos propia: `creditos_db`
 
 ### Notificaciones por Email (SQS)
 - Al completar una evaluación, Microservicio A publica un mensaje en una cola SQS

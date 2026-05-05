@@ -12,9 +12,9 @@ openapi: 3.0.3
 info:
   title: API de Evaluación de Créditos — Orquestador
   description: |
-    API principal del sistema de evaluación de créditos.
-    Incluye endpoints de evaluación crediticia, autenticación y gestión de usuarios.
-    Todos los endpoints (excepto /v1/auth/login) requieren Bearer JWT.
+    API del microservicio orquestador de evaluaciones de crédito.
+    Todos los endpoints requieren Bearer JWT emitido por el Microservicio C (Auth).
+    La autenticación y gestión de usuarios se realiza exclusivamente en MS-C (:8082).
   version: 1.0.0
   contact:
     name: Equipo de Créditos
@@ -32,160 +32,11 @@ security:
 tags:
   - name: Evaluaciones de Crédito
     description: Creación y consulta de evaluaciones crediticias
-  - name: Autenticación
-    description: Login y gestión de sesión JWT
-  - name: Usuarios
-    description: Gestión de usuarios y roles (solo ADMIN)
 
 # ─────────────────────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────────────────────
 paths:
-
-  # ── AUTH ──────────────────────────────────────────────────
-  /v1/auth/login:
-    post:
-      tags: [Autenticación]
-      summary: Iniciar sesión
-      description: Autentica al usuario y retorna un JWT válido por 8 horas.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LoginRequest'
-            example:
-              email: "analyst@banco.com"
-              password: "SecurePass123!"
-      responses:
-        '200':
-          description: Login exitoso
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/LoginResponse'
-              example:
-                accessToken: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
-                tokenType: "Bearer"
-                expiresIn: 28800
-                usuario:
-                  id: "550e8400-e29b-41d4-a716-446655440000"
-                  email: "analyst@banco.com"
-                  nombreCompleto: "María Pérez"
-                  rol: "ANALYST"
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '422':
-          $ref: '#/components/responses/ValidationError'
-
-  # ── USUARIOS ──────────────────────────────────────────────
-  /v1/auth/users:
-    get:
-      tags: [Usuarios]
-      summary: Listar todos los usuarios
-      description: Retorna la lista de usuarios registrados. Solo accesible por ADMIN.
-      security:
-        - BearerAuth: [ADMIN]
-      responses:
-        '200':
-          description: Lista de usuarios
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/UsuarioResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-
-    post:
-      tags: [Usuarios]
-      summary: Crear nuevo usuario
-      description: Registra un nuevo usuario en el sistema. Solo accesible por ADMIN.
-      security:
-        - BearerAuth: [ADMIN]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CrearUsuarioRequest'
-            example:
-              email: "nuevo.analista@banco.com"
-              password: "TempPass456!"
-              nombreCompleto: "Carlos García"
-              rol: "ANALYST"
-      responses:
-        '201':
-          description: Usuario creado exitosamente
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UsuarioResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '422':
-          $ref: '#/components/responses/ValidationError'
-
-  /v1/auth/users/{userId}:
-    get:
-      tags: [Usuarios]
-      summary: Obtener usuario por ID
-      security:
-        - BearerAuth: [ADMIN]
-      parameters:
-        - $ref: '#/components/parameters/UserId'
-      responses:
-        '200':
-          description: Usuario encontrado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UsuarioResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /v1/auth/users/{userId}/roles:
-    put:
-      tags: [Usuarios]
-      summary: Actualizar rol de un usuario
-      description: Cambia el rol asignado a un usuario. Solo accesible por ADMIN.
-      security:
-        - BearerAuth: [ADMIN]
-      parameters:
-        - $ref: '#/components/parameters/UserId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ActualizarRolRequest'
-            example:
-              rol: "VIEWER"
-      responses:
-        '200':
-          description: Rol actualizado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UsuarioResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
 
   # ── EVALUACIONES DE CRÉDITO ───────────────────────────────
   /v1/credit-evaluations:
@@ -313,17 +164,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        JWT emitido por POST /v1/auth/login.
-        Claims incluidos: sub (email), groups (rol), exp, iat.
+        JWT emitido por POST /v1/auth/login en el Microservicio C (localhost:8082).
+        Claims incluidos: sub (email), groups (rol), exp, iat, userId, nombreCompleto.
+        MS-A valida la firma con la clave pública RSA de MS-C.
 
   parameters:
-    UserId:
-      name: userId
-      in: path
-      required: true
-      schema:
-        type: string
-        format: uuid
     EvaluacionId:
       name: evaluacionId
       in: path
@@ -333,84 +178,6 @@ components:
         format: uuid
 
   schemas:
-
-    # ── AUTH ────────────────────────────────────────────────
-    LoginRequest:
-      type: object
-      required: [email, password]
-      properties:
-        email:
-          type: string
-          format: email
-          example: "analyst@banco.com"
-        password:
-          type: string
-          minLength: 8
-          example: "SecurePass123!"
-
-    LoginResponse:
-      type: object
-      properties:
-        accessToken:
-          type: string
-          description: JWT firmado con RS256
-        tokenType:
-          type: string
-          default: "Bearer"
-        expiresIn:
-          type: integer
-          description: Segundos hasta expiración (28800 = 8 horas)
-        usuario:
-          $ref: '#/components/schemas/UsuarioResponse'
-
-    # ── USUARIOS ────────────────────────────────────────────
-    CrearUsuarioRequest:
-      type: object
-      required: [email, password, nombreCompleto, rol]
-      properties:
-        email:
-          type: string
-          format: email
-        password:
-          type: string
-          minLength: 8
-          description: "Mínimo 8 caracteres, al menos 1 mayúscula, 1 número y 1 símbolo"
-        nombreCompleto:
-          type: string
-          minLength: 3
-          maxLength: 100
-        rol:
-          $ref: '#/components/schemas/Rol'
-
-    UsuarioResponse:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        email:
-          type: string
-          format: email
-        nombreCompleto:
-          type: string
-        rol:
-          $ref: '#/components/schemas/Rol'
-        activo:
-          type: boolean
-        creadoEn:
-          type: string
-          format: date-time
-
-    ActualizarRolRequest:
-      type: object
-      required: [rol]
-      properties:
-        rol:
-          $ref: '#/components/schemas/Rol'
-
-    Rol:
-      type: string
-      enum: [ADMIN, ANALYST, VIEWER]
 
     # ── EVALUACIONES ────────────────────────────────────────
     SolicitudCreditoRequest:
@@ -579,6 +346,352 @@ components:
 
 ---
 
+## Microservicio C — Auth / Identidad (`localhost:8082`)
+
+```yaml
+openapi: 3.0.3
+info:
+  title: API de Identidad y Acceso — Auth
+  description: |
+    Microservicio independiente de autenticación y gestión de usuarios.
+    Emite JWT firmados con RS256 consumidos por el resto del sistema.
+    El endpoint /v1/auth/login es público. El resto requiere rol ADMIN.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8082
+    description: Desarrollo local
+  - url: https://auth.banco.com
+    description: Producción
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Autenticación
+    description: Login y emisión de JWT
+  - name: Usuarios
+    description: Gestión de usuarios y roles (solo ADMIN)
+  - name: Claves
+    description: Distribución de clave pública RSA
+
+paths:
+
+  # ── AUTH ──────────────────────────────────────────────────
+  /v1/auth/login:
+    post:
+      tags: [Autenticación]
+      summary: Iniciar sesión
+      description: Autentica al usuario y retorna un JWT válido por 8 horas.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: "analyst@banco.com"
+              password: "SecurePass123!"
+      responses:
+        '200':
+          description: Login exitoso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                accessToken: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+                tokenType: "Bearer"
+                expiresIn: 28800
+                usuario:
+                  id: "550e8400-e29b-41d4-a716-446655440000"
+                  email: "analyst@banco.com"
+                  nombreCompleto: "María Pérez"
+                  rol: "ANALYST"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  # ── CLAVE PÚBLICA ─────────────────────────────────────────
+  /v1/auth/public-key:
+    get:
+      tags: [Claves]
+      summary: Obtener clave pública RSA
+      description: |
+        Retorna la clave pública RSA en formato PEM.
+        Usada por otros microservicios para verificar la firma de los JWT.
+        Endpoint público, sin autenticación requerida.
+      security: []
+      responses:
+        '200':
+          description: Clave pública en formato PEM
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  publicKey:
+                    type: string
+                    description: Clave pública RSA en formato PEM
+              example:
+                publicKey: "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkq..."
+
+  # ── USUARIOS ──────────────────────────────────────────────
+  /v1/auth/users:
+    get:
+      tags: [Usuarios]
+      summary: Listar todos los usuarios
+      description: Retorna la lista de usuarios registrados. Solo ADMIN.
+      security:
+        - BearerAuth: [ADMIN]
+      responses:
+        '200':
+          description: Lista de usuarios
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UsuarioResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags: [Usuarios]
+      summary: Crear nuevo usuario
+      description: Registra un nuevo usuario en el sistema. Solo ADMIN.
+      security:
+        - BearerAuth: [ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CrearUsuarioRequest'
+            example:
+              email: "nuevo.analista@banco.com"
+              password: "TempPass456!"
+              nombreCompleto: "Carlos García"
+              rol: "ANALYST"
+      responses:
+        '201':
+          description: Usuario creado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsuarioResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /v1/auth/users/{userId}:
+    get:
+      tags: [Usuarios]
+      summary: Obtener usuario por ID
+      security:
+        - BearerAuth: [ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Usuario encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsuarioResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/auth/users/{userId}/roles:
+    put:
+      tags: [Usuarios]
+      summary: Actualizar rol de un usuario
+      description: Cambia el rol asignado a un usuario. Solo ADMIN.
+      security:
+        - BearerAuth: [ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActualizarRolRequest'
+            example:
+              rol: "VIEWER"
+      responses:
+        '200':
+          description: Rol actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsuarioResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT emitido por este mismo servicio (POST /v1/auth/login).
+
+  parameters:
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: "analyst@banco.com"
+        password:
+          type: string
+          minLength: 8
+          example: "SecurePass123!"
+
+    LoginResponse:
+      type: object
+      properties:
+        accessToken:
+          type: string
+          description: JWT firmado con RS256
+        tokenType:
+          type: string
+          default: "Bearer"
+        expiresIn:
+          type: integer
+          description: Segundos hasta expiración (28800 = 8 horas)
+        usuario:
+          $ref: '#/components/schemas/UsuarioResponse'
+
+    CrearUsuarioRequest:
+      type: object
+      required: [email, password, nombreCompleto, rol]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+          description: "Mínimo 8 caracteres, 1 mayúscula, 1 número y 1 símbolo"
+        nombreCompleto:
+          type: string
+          minLength: 3
+          maxLength: 100
+        rol:
+          $ref: '#/components/schemas/Rol'
+
+    UsuarioResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        nombreCompleto:
+          type: string
+        rol:
+          $ref: '#/components/schemas/Rol'
+        activo:
+          type: boolean
+        creadoEn:
+          type: string
+          format: date-time
+
+    ActualizarRolRequest:
+      type: object
+      required: [rol]
+      properties:
+        rol:
+          $ref: '#/components/schemas/Rol'
+
+    Rol:
+      type: string
+      enum: [ADMIN, ANALYST, VIEWER]
+
+    ErrorResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        error:
+          type: string
+        message:
+          type: string
+        path:
+          type: string
+
+  responses:
+    Unauthorized:
+      description: Token ausente, inválido o expirado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: El usuario no tiene el rol requerido
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Recurso no encontrado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: El recurso ya existe (ej. email duplicado)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ValidationError:
+      description: Error de validación en los datos de entrada
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+```
+
+---
+
 ## Microservicio B — Riesgos Mock (`localhost:8081`)
 
 ```yaml
@@ -730,14 +843,15 @@ components:
 ## Notas de Implementación en Quarkus
 
 ```java
-// Configuración SmallRye OpenAPI en application.properties
-mp.openapi.extensions.smallrye.info.title=API de Evaluación de Créditos
+// Configuración SmallRye OpenAPI en application.properties (cada microservicio)
 mp.openapi.extensions.smallrye.info.version=1.0.0
 quarkus.swagger-ui.always-include=true
 quarkus.swagger-ui.path=/swagger-ui
 
 // Acceder en desarrollo:
-// Orquestador: http://localhost:8080/swagger-ui
-// Riesgos:     http://localhost:8081/swagger-ui
-// OpenAPI JSON: http://localhost:8080/q/openapi
+// Orquestador (MS-A): http://localhost:8080/swagger-ui
+// Riesgos     (MS-B): http://localhost:8081/swagger-ui
+// Auth        (MS-C): http://localhost:8082/swagger-ui
+// OpenAPI JSON MS-A:  http://localhost:8080/q/openapi
+// OpenAPI JSON MS-C:  http://localhost:8082/q/openapi
 ```

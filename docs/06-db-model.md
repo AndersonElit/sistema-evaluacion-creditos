@@ -1,6 +1,17 @@
 # Modelo de Base de Datos — PostgreSQL
 
-## Diagrama Entidad-Relación (Texto)
+El sistema utiliza **dos bases de datos independientes**, una por cada microservicio con datos propios:
+
+| Base de datos | Propietario | Tablas |
+|---------------|-------------|--------|
+| `auth_db` | Microservicio C — Auth | `users`, `roles`, `user_roles` |
+| `creditos_db` | Microservicio A — Orquestador | `credit_evaluations`, `notifications` |
+
+La columna `evaluado_por_id` en `credit_evaluations` es una **referencia débil por UUID** al usuario en `auth_db`. No existe foreign key cruzada entre bases de datos; la integridad se garantiza a nivel de aplicación.
+
+---
+
+## Base de Datos: `auth_db` — Microservicio C
 
 ```
 ┌────────────────────────────┐         ┌──────────────────────────────┐
@@ -19,7 +30,11 @@
               └──────────────────────────│ FK user_id         UUID    │
                                          │ FK role_id         UUID    │
                                          └────────────────────────────┘
+```
 
+## Base de Datos: `creditos_db` — Microservicio A
+
+```
 ┌────────────────────────────────────────────────────┐
 │                  credit_evaluations                 │
 ├────────────────────────────────────────────────────┤
@@ -32,7 +47,7 @@
 │    deuda_mensual_total NUMERIC(15,2) NOT NULL       │
 │    estado_final        VARCHAR(20)  NOT NULL        │
 │    fecha_evaluacion    TIMESTAMPTZ  NOT NULL        │
-│ FK evaluado_por_id     UUID                        │
+│    evaluado_por_id     UUID  [ref. débil a auth_db] │
 │    notificacion_enviada BOOLEAN DEFAULT FALSE       │
 └────────────────────────────────────────────────────┘
               △
@@ -58,6 +73,8 @@
 
 ## DDL — Scripts de Creación
 
+### `auth_db` — ejecutar en el PostgreSQL de Microservicio C
+
 ```sql
 -- ================================================================
 -- EXTENSIONES
@@ -67,10 +84,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";  -- para gen_random_uuid()
 -- ================================================================
 -- TIPOS ENUMERADOS
 -- ================================================================
-CREATE TYPE estado_evaluacion AS ENUM ('APROBADO', 'RECHAZADO', 'PENDIENTE');
-CREATE TYPE nombre_rol        AS ENUM ('ADMIN', 'ANALYST', 'VIEWER');
-CREATE TYPE tipo_notif        AS ENUM ('APROBADO', 'RECHAZADO');
-CREATE TYPE estado_notif      AS ENUM ('PENDIENTE', 'ENVIADO', 'FALLIDO');
+CREATE TYPE nombre_rol AS ENUM ('ADMIN', 'ANALYST', 'VIEWER');
 
 -- ================================================================
 -- TABLA: roles
@@ -109,6 +123,44 @@ CREATE TABLE user_roles (
 );
 
 -- ================================================================
+-- ÍNDICES
+-- ================================================================
+CREATE UNIQUE INDEX idx_users_email ON users (email);
+
+-- ================================================================
+-- USUARIO ADMIN INICIAL (hash de "Admin123!")
+-- ================================================================
+INSERT INTO users (email, password_hash, nombre_completo)
+VALUES (
+    'admin@banco.com',
+    '$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewzEk2LBVJbS1Dm.',
+    'Administrador del Sistema'
+);
+
+INSERT INTO user_roles (user_id, role_id)
+SELECT u.id, r.id
+FROM users u, roles r
+WHERE u.email = 'admin@banco.com' AND r.nombre = 'ADMIN';
+```
+
+---
+
+### `creditos_db` — ejecutar en el PostgreSQL de Microservicio A
+
+```sql
+-- ================================================================
+-- EXTENSIONES
+-- ================================================================
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- ================================================================
+-- TIPOS ENUMERADOS
+-- ================================================================
+CREATE TYPE estado_evaluacion AS ENUM ('APROBADO', 'RECHAZADO', 'PENDIENTE');
+CREATE TYPE tipo_notif        AS ENUM ('APROBADO', 'RECHAZADO');
+CREATE TYPE estado_notif      AS ENUM ('PENDIENTE', 'ENVIADO', 'FALLIDO');
+
+-- ================================================================
 -- TABLA: credit_evaluations
 -- ================================================================
 CREATE TABLE credit_evaluations (
@@ -121,7 +173,7 @@ CREATE TABLE credit_evaluations (
     deuda_mensual_total  NUMERIC(15, 2) NOT NULL CHECK (deuda_mensual_total >= 0),
     estado_final         estado_evaluacion NOT NULL DEFAULT 'PENDIENTE',
     fecha_evaluacion     TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
-    evaluado_por_id      UUID           REFERENCES users(id) ON DELETE SET NULL,
+    evaluado_por_id      UUID,          -- referencia débil a auth_db.users, sin FK cruzada
     notificacion_enviada BOOLEAN        NOT NULL DEFAULT FALSE
 );
 
@@ -168,32 +220,15 @@ CREATE INDEX idx_notifications_estado
 -- Evitar notificaciones duplicadas por evaluación
 CREATE UNIQUE INDEX idx_notifications_evaluacion_unique
     ON notifications (evaluacion_id);
-
--- Búsqueda rápida de usuarios por email
-CREATE UNIQUE INDEX idx_users_email
-    ON users (email);
-
--- ================================================================
--- USUARIO ADMIN INICIAL (hash de "Admin123!")
--- ================================================================
-INSERT INTO users (email, password_hash, nombre_completo)
-VALUES (
-    'admin@banco.com',
-    '$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewzEk2LBVJbS1Dm.',
-    'Administrador del Sistema'
-);
-
-INSERT INTO user_roles (user_id, role_id)
-SELECT u.id, r.id
-FROM users u, roles r
-WHERE u.email = 'admin@banco.com' AND r.nombre = 'ADMIN';
 ```
 
 ---
 
 ## Descripción de Tablas
 
-### `users`
+### Tablas en `auth_db` (Microservicio C)
+
+#### `users`
 | Columna | Tipo | Descripción |
 |---------|------|-------------|
 | `id` | UUID | PK generado automáticamente |
@@ -203,15 +238,19 @@ WHERE u.email = 'admin@banco.com' AND r.nombre = 'ADMIN';
 | `activo` | BOOLEAN | Permite desactivar usuarios sin borrarlos |
 | `creado_en` | TIMESTAMPTZ | Timestamp de creación con zona horaria |
 
-### `roles`
+#### `roles`
 | Columna | Tipo | Descripción |
 |---------|------|-------------|
 | `id` | UUID | PK |
 | `nombre` | ENUM | ADMIN / ANALYST / VIEWER |
 | `descripcion` | TEXT | Descripción del rol para UI |
 
-### `user_roles`
+#### `user_roles`
 Tabla de unión many-to-many entre `users` y `roles`. En la práctica del sistema actual, un usuario tiene exactamente un rol, pero el esquema permite expansión futura.
+
+---
+
+### Tablas en `creditos_db` (Microservicio A)
 
 ### `credit_evaluations`
 | Columna | Tipo | Descripción |
@@ -225,7 +264,7 @@ Tabla de unión many-to-many entre `users` y `roles`. En la práctica del sistem
 | `deuda_mensual_total` | NUMERIC(15,2) | Suma de mensualidades de deudas |
 | `estado_final` | ENUM | APROBADO / RECHAZADO / PENDIENTE |
 | `fecha_evaluacion` | TIMESTAMPTZ | Momento exacto de la evaluación |
-| `evaluado_por_id` | UUID FK | Analista que realizó la evaluación |
+| `evaluado_por_id` | UUID (ref. débil) | ID del analista en `auth_db` — sin FK cruzada |
 | `notificacion_enviada` | BOOLEAN | Flag para idempotencia de notificaciones |
 
 ### `notifications`
@@ -245,15 +284,33 @@ Tabla de unión many-to-many entre `users` y `roles`. En la práctica del sistem
 
 ## Configuración Quarkus (application.properties)
 
+### Microservicio A — `creditos_db`
+
 ```properties
 # ── Datasource ───────────────────────────────────────────────
 quarkus.datasource.db-kind=postgresql
 quarkus.datasource.username=${DB_USERNAME:postgres}
 quarkus.datasource.password=${DB_PASSWORD:postgres}
-quarkus.datasource.jdbc.url=jdbc:postgresql://${DB_HOST:localhost}:5432/${DB_NAME:creditos_db}
+quarkus.datasource.jdbc.url=jdbc:postgresql://${DB_HOST:localhost}:5432/creditos_db
 
 # ── Hibernate ORM ────────────────────────────────────────────
-# En producción: none o validate — NUNCA drop-and-create
+quarkus.hibernate-orm.database.generation=validate
+
+# ── Flyway (migraciones) ─────────────────────────────────────
+quarkus.flyway.migrate-at-start=true
+quarkus.flyway.locations=classpath:db/migration
+```
+
+### Microservicio C — `auth_db`
+
+```properties
+# ── Datasource ───────────────────────────────────────────────
+quarkus.datasource.db-kind=postgresql
+quarkus.datasource.username=${AUTH_DB_USERNAME:postgres}
+quarkus.datasource.password=${AUTH_DB_PASSWORD:postgres}
+quarkus.datasource.jdbc.url=jdbc:postgresql://${AUTH_DB_HOST:localhost}:5433/auth_db
+
+# ── Hibernate ORM ────────────────────────────────────────────
 quarkus.hibernate-orm.database.generation=validate
 
 # ── Flyway (migraciones) ─────────────────────────────────────

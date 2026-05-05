@@ -1,6 +1,12 @@
-# Autenticación, Login y Gestión de Usuarios
+# Microservicio C — Autenticación, Login y Gestión de Usuarios
 
-## 1. Estrategia de Autenticación
+## 1. Arquitectura del Servicio
+
+La autenticación y gestión de identidad está implementada como un **microservicio independiente (MS-C)** que corre en el puerto `8082`. Esta separación garantiza que MS-A (Orquestador) tenga una única responsabilidad: evaluar créditos.
+
+**Principio de integración:** MS-C emite JWT firmados con una clave privada RSA. MS-A y cualquier otro servicio validan esos tokens usando únicamente la clave pública RSA, **sin llamadas en runtime a MS-C**.
+
+## 2. Estrategia de Autenticación
 
 Se usa **JWT stateless** con el estándar **MicroProfile JWT** implementado en Quarkus vía `quarkus-smallrye-jwt`. No se usa Keycloak ni ningún servidor de autorización externo para mantener la arquitectura simple.
 
@@ -18,34 +24,37 @@ Se usa **JWT stateless** con el estándar **MicroProfile JWT** implementado en Q
 
 ---
 
-## 2. Flujo de Autenticación
+## 3. Flujo de Autenticación
 
 ```
-┌──────────┐    POST /v1/auth/login      ┌──────────────────────────┐
-│ Frontend │ ──────────────────────────> │                          │
-│          │   {email, password}         │   Microservicio A        │
-│          │                             │   (Orquestador)          │
-│          │ <────────────────────────── │                          │
-│          │   {accessToken, expiresIn}  │   1. Busca user por email│
-│          │                             │   2. bcrypt.verify(pwd)  │
-│          │                             │   3. Genera JWT (RS256)  │
-└──────────┘                             └──────────────────────────┘
+PASO 1 — Login (solo MS-C):
 
-Cada request subsiguiente:
+┌──────────┐  POST /v1/auth/login   ┌──────────────────────────────┐
+│ Frontend │ ──────────────────────>│  Microservicio C — Auth      │
+│          │  {email, password}     │  :8082                       │
+│          │                        │  1. Busca user en auth_db    │
+│          │ <──────────────────── │  2. bcrypt.verify(pwd)       │
+│          │  {accessToken,         │  3. Genera JWT (RS256)       │
+│          │   expiresIn, usuario}  │                              │
+└──────────┘                        └──────────────────────────────┘
 
-┌──────────┐    GET /v1/credit-evaluations  ┌─────────────────────────┐
-│ Frontend │ ────────────────────────────>  │  Microservicio A        │
-│          │   Authorization: Bearer <jwt>  │                         │
-│          │                                │  1. Valida firma JWT    │
-│          │                                │  2. Verifica expiración │
-│          │ <──────────────────────────── │  3. Extrae rol (groups) │
-│          │   200 OK + datos               │  4. Verifica @RolesAllowed│
-└──────────┘                                └─────────────────────────┘
+PASO 2 — Uso del JWT (MS-A, sin llamar a MS-C):
+
+┌──────────┐  GET /v1/credit-evaluations    ┌──────────────────────────────┐
+│ Frontend │ ─────────────────────────────> │  Microservicio A — Orquestador│
+│          │  Authorization: Bearer <jwt>   │  :8080                       │
+│          │                                │  1. Verifica firma con       │
+│          │ <───────────────────────────── │     clave pública RSA        │
+│          │  200 OK + datos                │  2. Verifica expiración      │
+│          │                                │  3. Extrae rol (groups)      │
+└──────────┘                                │  4. Verifica @RolesAllowed   │
+                                            └──────────────────────────────┘
+                                            (no hay llamada HTTP a MS-C)
 ```
 
 ---
 
-## 3. Estructura del JWT
+## 4. Estructura del JWT
 
 ```json
 {
@@ -74,7 +83,7 @@ Cada request subsiguiente:
 
 ---
 
-## 4. Configuración Quarkus
+## 5. Configuración Quarkus
 
 ### Dependencias (`pom.xml`)
 
@@ -96,19 +105,39 @@ Cada request subsiguiente:
 </dependency>
 ```
 
-### `application.properties`
+### `application.properties` — Microservicio C (Auth)
 
 ```properties
-# ── JWT Validation ───────────────────────────────────────────
-mp.jwt.verify.publickey.location=META-INF/resources/publicKey.pem
-mp.jwt.verify.issuer=https://api.banco.com
+quarkus.http.port=8082
 
 # ── JWT Generation (SmallRye JWT Build) ─────────────────────
 smallrye.jwt.sign.key.location=META-INF/resources/privateKey.pem
 mp.jwt.token.expiration.time=28800
 
+# ── JWT Validation (para los endpoints protegidos de MS-C) ───
+mp.jwt.verify.publickey.location=META-INF/resources/publicKey.pem
+mp.jwt.verify.issuer=https://auth.banco.com
+
 # ── Password hashing ─────────────────────────────────────────
 quarkus.security.users.embedded.enabled=false
+
+# ── Datasource ───────────────────────────────────────────────
+quarkus.datasource.jdbc.url=jdbc:postgresql://${AUTH_DB_HOST:localhost}:5433/auth_db
+```
+
+### `application.properties` — Microservicio A (validación JWT sin generación)
+
+```properties
+quarkus.http.port=8080
+
+# ── JWT Validation únicamente — MS-A no genera tokens ────────
+mp.jwt.verify.publickey.location=META-INF/resources/publicKey.pem
+mp.jwt.verify.issuer=https://auth.banco.com
+
+# La clave pública es la misma que usa MS-C para firmar.
+# Se distribuye como archivo PEM copiado en el build de MS-A,
+# o descargada de GET http://auth-service:8082/v1/auth/public-key en startup.
+# MS-A NO necesita la clave privada.
 ```
 
 ### Generación del par de claves RSA
@@ -125,7 +154,7 @@ openssl rsa -in privateKey.pem -pubout -out publicKey.pem
 
 ---
 
-## 5. Implementación de Endpoints
+## 6. Implementación de Endpoints (en MS-C)
 
 ### `AuthResource.java`
 
@@ -233,22 +262,24 @@ public class AuthService {
 
 ---
 
-## 6. Protección de Endpoints por Rol
+## 7. Protección de Endpoints por Rol
+
+Los endpoints de MS-A aplican `@RolesAllowed` sobre el JWT emitido por MS-C:
 
 ```java
-// Solo ADMIN y ANALYST pueden evaluar
+// En MS-A — Solo ADMIN y ANALYST pueden evaluar
 @POST
 @Path("/v1/credit-evaluations")
 @RolesAllowed({"ADMIN", "ANALYST"})
 public Response evaluarCredito(...) { ... }
 
-// Todos los roles autenticados pueden ver la lista
+// En MS-A — Todos los roles autenticados pueden ver la lista
 @GET
 @Path("/v1/credit-evaluations")
 @Authenticated
 public List<EvaluacionResponse> listar(...) { ... }
 
-// Solo ADMIN puede gestionar usuarios
+// En MS-C — Solo ADMIN puede gestionar usuarios
 @POST
 @Path("/v1/auth/users")
 @RolesAllowed("ADMIN")
@@ -257,7 +288,7 @@ public Response crearUsuario(...) { ... }
 
 ---
 
-## 7. Gestión de Roles
+## 8. Gestión de Roles
 
 ### Roles del Sistema
 
@@ -277,12 +308,14 @@ public Response crearUsuario(...) { ... }
 
 ---
 
-## 8. Seguridad Adicional
+## 9. Seguridad Adicional
 
 ### CORS Seguro
 
+Cada microservicio configura su propio CORS. MS-C acepta llamadas del frontend para login:
+
 ```properties
-# application.properties
+# application.properties de MS-C
 quarkus.http.cors=true
 quarkus.http.cors.origins=http://localhost:3000,https://creditos.banco.com
 quarkus.http.cors.methods=GET,POST,PUT,OPTIONS
@@ -325,20 +358,20 @@ private String password;
 
 ---
 
-## 9. Flujo de Creación de Usuario (Admin)
+## 10. Flujo de Creación de Usuario (Admin)
 
 ```
-[Admin UI]  →  POST /v1/auth/users  →  [MS-A]
-                                           │
-                                    ¿Email existe?
-                                    ├── Sí → 409 Conflict
-                                    └── No
-                                           │
-                                    Encode password (bcrypt 12)
-                                           │
-                                    Persist user + role en BD
-                                           │
-                                    Return 201 Created
-                                           │
-                                    [Admin UI muestra nuevo usuario]
+[Admin UI]  →  POST /v1/auth/users  →  [MS-C :8082]
+                                              │
+                                       ¿Email existe? (auth_db)
+                                       ├── Sí → 409 Conflict
+                                       └── No
+                                              │
+                                       Encode password (bcrypt 12)
+                                              │
+                                       Persist user + role en auth_db
+                                              │
+                                       Return 201 Created
+                                              │
+                                       [Admin UI muestra nuevo usuario]
 ```

@@ -227,6 +227,41 @@ Si MS-B falla repetidamente, el Circuit Breaker abre y se retorna 503 al cliente
 
 ---
 
+---
+
+## ADR-008: Desacoplamiento de Identidad en Microservicio Independiente (MS-C)
+
+**Estado:** Aceptado  
+**Fecha:** 2026-05-05  
+**Contexto:** Originalmente, la autenticación y gestión de usuarios estaba embebida en el Microservicio A (Orquestador). Se evaluó si extraer esta responsabilidad a un servicio propio aportaba beneficios reales dado el tamaño del sistema.
+
+### Opciones evaluadas
+
+| Criterio | Auth embebida en MS-A | Auth en MS-C independiente |
+|----------|:---:|:---:|
+| Responsabilidad única (SRP) | ❌ MS-A mezcla dominios | ✅ cada servicio tiene un propósito |
+| Escalabilidad independiente | ❌ escala todo junto | ✅ MS-C puede escalar por separado |
+| Reutilización futura | ❌ acoplado a MS-A | ✅ otros servicios pueden consumir JWT de MS-C |
+| Aislamiento de BD | ❌ usuarios y evaluaciones en la misma BD | ✅ `auth_db` separada de `creditos_db` |
+| Acoplamiento en runtime | — | ✅ cero: MS-A solo necesita la clave pública RSA |
+| Complejidad operacional | Baja (1 servicio menos) | Media (un contenedor más) |
+| Riesgo de despliegue | Bajo | Bajo (MS-C no es una dependencia runtime de MS-A) |
+
+### Decisión
+**Microservicio C independiente** por las siguientes razones:
+
+1. **Separación de responsabilidades:** El orquestador de créditos no debe conocer ni gestionar credenciales de usuarios. Son dominios distintos (Core vs Generic).
+2. **Acoplamiento cero en runtime:** Gracias a JWT firmado con RS256, MS-A verifica tokens con la clave pública sin necesitar llamadas HTTP a MS-C. Si MS-C cae, MS-A sigue funcionando para tokens ya emitidos.
+3. **Base de datos aislada:** `auth_db` y `creditos_db` evolucionan de forma independiente. No hay FKs cruzadas — `evaluado_por_id` en `credit_evaluations` es una referencia débil por UUID.
+4. **Ruta de migración clara:** Si en el futuro se adopta Keycloak o un IdP externo, solo se reemplaza MS-C sin tocar MS-A ni MS-B. Solo cambia `mp.jwt.verify.publickey.location`.
+
+### Consecuencias
+- El frontend hace dos tipos de llamadas: a MS-C para autenticarse y a MS-A para operar.
+- La clave pública RSA debe estar disponible en el build de MS-A (como archivo PEM) o descargarse de `GET /v1/auth/public-key` de MS-C durante el arranque.
+- Se agrega un contenedor al Docker Compose de desarrollo.
+
+---
+
 ## Resumen de Decisiones
 
 | ID | Decisión | Alternativa Descartada | Razón Principal |
@@ -238,3 +273,4 @@ Si MS-B falla repetidamente, el Circuit Breaker abre y se retorna 503 al cliente
 | ADR-005 | AWS SQS | Llamada directa | Desacoplamiento, resiliencia, DLQ |
 | ADR-006 | Módulo 10 custom | Regex simple | Validación matemática real de cédulas |
 | ADR-007 | Llamadas paralelas | Secuencial | 43% menos latencia por request |
+| ADR-008 | Auth en MS-C independiente | Auth embebida en MS-A | SRP, aislamiento de BD, cero acoplamiento runtime |

@@ -83,6 +83,8 @@ EstadoEvaluacion
 | `EvaluacionCompletada` | Resultado calculado y persistido | Regla de negocio evaluada |
 | `EvaluacionFallida` | Error al contactar servicio de riesgos | Timeout o error 5xx de Microservicio B |
 
+> **Nota:** Este bounded context **no gestiona usuarios ni emite tokens JWT**. Delega completamente la identidad al Bounded Context de Identidad y Acceso (Microservicio C). El `evaluadoPor` es solo una referencia por ID/email extraída del JWT, no una consulta a MS-C.
+
 ---
 
 ### 3.2 Bounded Context: Valoración de Riesgos (`risk-assessment`)
@@ -117,7 +119,7 @@ Deuda
 
 ### 3.3 Bounded Context: Identidad y Acceso (`identity-access`)
 
-**Responsabilidad:** Gestionar usuarios, credenciales, roles y emisión de tokens JWT.
+**Responsabilidad:** Gestionar usuarios, credenciales, roles y emisión de tokens JWT. Implementado como **Microservicio C independiente** (`localhost:8082`). El resto del sistema no lo llama en runtime; solo comparte la clave pública RSA para verificación de tokens.
 
 #### Lenguaje Ubicuo
 
@@ -190,29 +192,37 @@ Notificacion
 ## 4. Context Map
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        CONTEXT MAP                                   │
-│                                                                      │
-│  ┌──────────────────┐   Customer/Supplier   ┌─────────────────────┐ │
-│  │  Evaluación de   │ ─────────────────────>│  Valoración de      │ │
-│  │  Crédito (Core)  │   REST (sync)          │  Riesgos (Support)  │ │
-│  │                  │ <─────────────────────│                     │ │
-│  └────────┬─────────┘                       └─────────────────────┘ │
-│           │                                                          │
-│           │ Conformist                                               │
-│           │ (consume JWT sin modificarlo)                            │
-│           │                                                          │
-│  ┌────────▼─────────┐   Published Language  ┌─────────────────────┐ │
-│  │  Identidad y     │ ─────────────────────>│  Notificaciones     │ │
-│  │  Acceso (Generic)│   SQS Events (async)  │  (Supporting)       │ │
-│  └──────────────────┘                       └─────────────────────┘ │
-│                                                                      │
-│  Relaciones:                                                         │
-│  → Customer/Supplier: Evaluación depende de Riesgos como proveedor  │
-│  → Conformist: Evaluación acepta el contrato JWT de Identidad       │
-│  → Published Language: Evaluación publica eventos que consume       │
-│    Notificaciones a través de SQS                                   │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                             CONTEXT MAP                                   │
+│                                                                           │
+│  ┌───────────────────┐  Customer/Supplier   ┌──────────────────────────┐ │
+│  │  Evaluación de    │ ───────────────────> │  Valoración de Riesgos   │ │
+│  │  Crédito (Core)   │  REST sync (A→B)     │  (Supporting)  MS-B      │ │
+│  │  MS-A :8080       │ <─────────────────── │  :8081                   │ │
+│  └─────────┬─────────┘                      └──────────────────────────┘ │
+│            │                                                              │
+│            │ Conformist                                                   │
+│            │ (consume JWT firmado por MS-C, sin llamarlo en runtime)      │
+│            │ [clave pública compartida vía PEM]                           │
+│            │                                                              │
+│  ┌─────────▼──────────┐                     ┌──────────────────────────┐ │
+│  │  Identidad y       │                     │  Notificaciones          │ │
+│  │  Acceso (Generic)  │                     │  (Supporting)            │ │
+│  │  MS-C :8082        │                     │  Worker embebido en MS-A │ │
+│  └────────────────────┘                     └──────────────────────────┘ │
+│            ▲                                           ▲                  │
+│            │ Usuario interactúa                        │ Published Language│
+│            │ (login, gestión)                          │ SQS Events (async)│
+│            │                                           │                  │
+│         [Frontend]  ─────── REST+JWT ──────>  [MS-A evalúa y publica]   │
+│                                                                           │
+│  Relaciones:                                                              │
+│  → Customer/Supplier: MS-A depende de MS-B como proveedor de riesgo     │
+│  → Conformist: MS-A acepta el contrato JWT emitido por MS-C             │
+│  → Published Language: MS-A publica EvaluacionCompletada en SQS,        │
+│    consumida por el Notification Worker                                  │
+│  → MS-C es autónomo: no depende ni llama a MS-A ni MS-B en runtime     │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -220,17 +230,17 @@ Notificacion
 ## 5. Resumen de Eventos de Dominio por Contexto
 
 ```
-[Evaluación de Crédito]
+[Evaluación de Crédito — MS-A]
   EvaluacionSolicitada ──────────────────────────────────────────────>
   EvaluacionCompletada ──> [Notificaciones] : publica en SQS
   EvaluacionFallida    ──> log + respuesta de error al cliente
 
-[Identidad y Acceso]
-  UsuarioCreado        ──> log interno
-  SesionIniciada       ──> emite JWT
-  SesionExpirada       ──> cliente recibe 401
+[Identidad y Acceso — MS-C]   ← servicio independiente
+  UsuarioCreado        ──> log interno (auth_db)
+  SesionIniciada       ──> emite JWT firmado con clave privada RSA
+  SesionExpirada       ──> cliente recibe 401 (validado en MS-A sin llamar a MS-C)
 
-[Notificaciones]
-  NotificacionEnviada  ──> actualiza estado en BD
+[Notificaciones — Worker en MS-A]
+  NotificacionEnviada  ──> actualiza estado en creditos_db
   NotificacionFallida  ──> reintento / DLQ
 ```
