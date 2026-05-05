@@ -13,8 +13,8 @@ info:
   title: API de Evaluación de Créditos — Orquestador
   description: |
     API del microservicio orquestador de evaluaciones de crédito.
-    Todos los endpoints requieren Bearer JWT emitido por el ms-auth (Auth).
-    La autenticación y gestión de usuarios se realiza exclusivamente en ms-auth (:8082).
+    Todos los endpoints requieren Bearer JWT emitido por Keycloak (realm: banco).
+    La autenticación y gestión de usuarios se realiza exclusivamente en Keycloak (:9000).
   version: 1.0.0
   contact:
     name: Equipo de Créditos
@@ -164,9 +164,9 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        JWT emitido por POST /v1/auth/login en el ms-auth (localhost:8082).
-        Claims incluidos: sub (email), groups (rol), exp, iat, userId, nombreCompleto.
-        ms-credit-evaluation valida la firma con la clave pública RSA de ms-auth.
+        JWT emitido por Keycloak (realm: banco) via OIDC Authorization Code + PKCE.
+        Claims incluidos: sub (UUID usuario Keycloak), groups (rol), email, name, exp, iat.
+        ms-credit-evaluation valida la firma contra el JWKS endpoint de Keycloak.
 
   parameters:
     EvaluacionId:
@@ -346,349 +346,76 @@ components:
 
 ---
 
-## ms-auth (`localhost:8082`)
+## Keycloak (`localhost:9000`) — IAM / OIDC Provider
 
-```yaml
-openapi: 3.0.3
-info:
-  title: API de Identidad y Acceso — Auth
-  description: |
-    Microservicio independiente de autenticación y gestión de usuarios.
-    Emite JWT firmados con RS256 consumidos por el resto del sistema.
-    El endpoint /v1/auth/login es público. El resto requiere rol ADMIN.
-  version: 1.0.0
+> Keycloak no expone una OpenAPI propia del sistema — gestiona la identidad con sus endpoints OIDC estándar. La gestión de usuarios y roles se realiza vía **Keycloak Admin Console** (`http://localhost:9000/admin`) o la **Admin REST API** de Keycloak.
 
-servers:
-  - url: http://localhost:8082
-    description: Desarrollo local
-  - url: https://auth.banco.com
-    description: Producción
+### Endpoints OIDC relevantes (Realm `banco`)
 
-security:
-  - BearerAuth: []
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/realms/banco/protocol/openid-connect/auth` | GET | Authorization endpoint — redirige al login de Keycloak |
+| `/realms/banco/protocol/openid-connect/token` | POST | Token endpoint — intercambia code por JWT |
+| `/realms/banco/protocol/openid-connect/logout` | POST | Revoca sesión y tokens de refresco |
+| `/realms/banco/protocol/openid-connect/certs` | GET | JWKS — clave pública RSA para verificar JWT |
+| `/realms/banco/protocol/openid-connect/userinfo` | GET | Claims del usuario autenticado |
 
-tags:
-  - name: Autenticación
-    description: Login y emisión de JWT
-  - name: Usuarios
-    description: Gestión de usuarios y roles (solo ADMIN)
-  - name: Claves
-    description: Distribución de clave pública RSA
+### Flujo de login desde el Frontend (Authorization Code + PKCE)
 
-paths:
-
-  # ── AUTH ──────────────────────────────────────────────────
-  /v1/auth/login:
-    post:
-      tags: [Autenticación]
-      summary: Iniciar sesión
-      description: Autentica al usuario y retorna un JWT válido por 8 horas.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LoginRequest'
-            example:
-              email: "analyst@banco.com"
-              password: "SecurePass123!"
-      responses:
-        '200':
-          description: Login exitoso
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/LoginResponse'
-              example:
-                accessToken: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
-                tokenType: "Bearer"
-                expiresIn: 28800
-                usuario:
-                  id: "550e8400-e29b-41d4-a716-446655440000"
-                  email: "analyst@banco.com"
-                  nombreCompleto: "María Pérez"
-                  rol: "ANALYST"
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '422':
-          $ref: '#/components/responses/ValidationError'
-
-  # ── CLAVE PÚBLICA ─────────────────────────────────────────
-  /v1/auth/public-key:
-    get:
-      tags: [Claves]
-      summary: Obtener clave pública RSA
-      description: |
-        Retorna la clave pública RSA en formato PEM.
-        Usada por otros microservicios para verificar la firma de los JWT.
-        Endpoint público, sin autenticación requerida.
-      security: []
-      responses:
-        '200':
-          description: Clave pública en formato PEM
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  publicKey:
-                    type: string
-                    description: Clave pública RSA en formato PEM
-              example:
-                publicKey: "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkq..."
-
-  # ── USUARIOS ──────────────────────────────────────────────
-  /v1/auth/users:
-    get:
-      tags: [Usuarios]
-      summary: Listar todos los usuarios
-      description: Retorna la lista de usuarios registrados. Solo ADMIN.
-      security:
-        - BearerAuth: [ADMIN]
-      responses:
-        '200':
-          description: Lista de usuarios
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/UsuarioResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-
-    post:
-      tags: [Usuarios]
-      summary: Crear nuevo usuario
-      description: Registra un nuevo usuario en el sistema. Solo ADMIN.
-      security:
-        - BearerAuth: [ADMIN]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CrearUsuarioRequest'
-            example:
-              email: "nuevo.analista@banco.com"
-              password: "TempPass456!"
-              nombreCompleto: "Carlos García"
-              rol: "ANALYST"
-      responses:
-        '201':
-          description: Usuario creado exitosamente
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UsuarioResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '422':
-          $ref: '#/components/responses/ValidationError'
-
-  /v1/auth/users/{userId}:
-    get:
-      tags: [Usuarios]
-      summary: Obtener usuario por ID
-      security:
-        - BearerAuth: [ADMIN]
-      parameters:
-        - $ref: '#/components/parameters/UserId'
-      responses:
-        '200':
-          description: Usuario encontrado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UsuarioResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /v1/auth/users/{userId}/roles:
-    put:
-      tags: [Usuarios]
-      summary: Actualizar rol de un usuario
-      description: Cambia el rol asignado a un usuario. Solo ADMIN.
-      security:
-        - BearerAuth: [ADMIN]
-      parameters:
-        - $ref: '#/components/parameters/UserId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ActualizarRolRequest'
-            example:
-              rol: "VIEWER"
-      responses:
-        '200':
-          description: Rol actualizado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UsuarioResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-components:
-
-  securitySchemes:
-    BearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: JWT emitido por este mismo servicio (POST /v1/auth/login).
-
-  parameters:
-    UserId:
-      name: userId
-      in: path
-      required: true
-      schema:
-        type: string
-        format: uuid
-
-  schemas:
-
-    LoginRequest:
-      type: object
-      required: [email, password]
-      properties:
-        email:
-          type: string
-          format: email
-          example: "analyst@banco.com"
-        password:
-          type: string
-          minLength: 8
-          example: "SecurePass123!"
-
-    LoginResponse:
-      type: object
-      properties:
-        accessToken:
-          type: string
-          description: JWT firmado con RS256
-        tokenType:
-          type: string
-          default: "Bearer"
-        expiresIn:
-          type: integer
-          description: Segundos hasta expiración (28800 = 8 horas)
-        usuario:
-          $ref: '#/components/schemas/UsuarioResponse'
-
-    CrearUsuarioRequest:
-      type: object
-      required: [email, password, nombreCompleto, rol]
-      properties:
-        email:
-          type: string
-          format: email
-        password:
-          type: string
-          minLength: 8
-          description: "Mínimo 8 caracteres, 1 mayúscula, 1 número y 1 símbolo"
-        nombreCompleto:
-          type: string
-          minLength: 3
-          maxLength: 100
-        rol:
-          $ref: '#/components/schemas/Rol'
-
-    UsuarioResponse:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        email:
-          type: string
-          format: email
-        nombreCompleto:
-          type: string
-        rol:
-          $ref: '#/components/schemas/Rol'
-        activo:
-          type: boolean
-        creadoEn:
-          type: string
-          format: date-time
-
-    ActualizarRolRequest:
-      type: object
-      required: [rol]
-      properties:
-        rol:
-          $ref: '#/components/schemas/Rol'
-
-    Rol:
-      type: string
-      enum: [ADMIN, ANALYST, VIEWER]
-
-    ErrorResponse:
-      type: object
-      properties:
-        timestamp:
-          type: string
-          format: date-time
-        status:
-          type: integer
-        error:
-          type: string
-        message:
-          type: string
-        path:
-          type: string
-
-  responses:
-    Unauthorized:
-      description: Token ausente, inválido o expirado
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-    Forbidden:
-      description: El usuario no tiene el rol requerido
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-    NotFound:
-      description: Recurso no encontrado
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-    Conflict:
-      description: El recurso ya existe (ej. email duplicado)
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-    ValidationError:
-      description: Error de validación en los datos de entrada
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
 ```
+1. Frontend redirige a:
+   GET /realms/banco/protocol/openid-connect/auth
+       ?client_id=credit-evaluation-spa
+       &response_type=code
+       &redirect_uri=http://localhost:3000/callback
+       &scope=openid profile email
+       &code_challenge=<PKCE>
+       &code_challenge_method=S256
+
+2. Keycloak muestra formulario de login (usuario/contraseña)
+
+3. Keycloak redirige a redirect_uri con ?code=<authorization_code>
+
+4. Frontend intercambia code por tokens:
+   POST /realms/banco/protocol/openid-connect/token
+   Body: grant_type=authorization_code&code=<code>&code_verifier=<PKCE>
+
+5. Keycloak retorna:
+   {
+     "access_token": "eyJhbGciOiJSUzI1NiJ9...",
+     "token_type": "Bearer",
+     "expires_in": 300,
+     "refresh_token": "...",
+     "id_token": "..."
+   }
+
+6. Frontend envía access_token en header Authorization: Bearer <token>
+   a ms-credit-evaluation para todas las operaciones.
+```
+
+### Estructura del JWT emitido por Keycloak
+
+```json
+{
+  "header": { "alg": "RS256", "typ": "JWT", "kid": "..." },
+  "payload": {
+    "iss": "http://localhost:9000/realms/banco",
+    "sub": "550e8400-e29b-41d4-a716-446655440000",
+    "aud": "credit-evaluation-spa",
+    "exp": 1746446700,
+    "iat": 1746446400,
+    "email": "analyst@banco.com",
+    "name": "María Pérez",
+    "preferred_username": "analyst@banco.com",
+    "realm_access": {
+      "roles": ["ANALYST", "offline_access", "uma_authorization"]
+    },
+    "groups": ["ANALYST"]
+  }
+}
+```
+
+> El mapper de Keycloak copia `realm_access.roles` al claim `groups` para compatibilidad con `@RolesAllowed` de Quarkus SmallRye JWT.
 
 ---
 
@@ -850,8 +577,8 @@ quarkus.swagger-ui.path=/swagger-ui
 
 // Acceder en desarrollo:
 // Orquestador (ms-credit-evaluation): http://localhost:8080/swagger-ui
-// Riesgos     (ms-risk): http://localhost:8081/swagger-ui
-// Auth        (ms-auth): http://localhost:8082/swagger-ui
+// Riesgos     (ms-risk):              http://localhost:8081/swagger-ui
+// Keycloak Admin Console:             http://localhost:9000/admin
+// Keycloak OIDC Discovery:            http://localhost:9000/realms/banco/.well-known/openid-configuration
 // OpenAPI JSON ms-credit-evaluation:  http://localhost:8080/q/openapi
-// OpenAPI JSON ms-auth:  http://localhost:8082/q/openapi
 ```

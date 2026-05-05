@@ -2,7 +2,7 @@
 
 ## Descripción General
 
-Mini-ecosistema de evaluación de créditos compuesto por un Frontend React y cuatro microservicios Java Quarkus: `ms-credit-evaluation` (orquestador), `ms-risk` (riesgos mock), `ms-auth` (identidad) y `ms-notifications` (notificaciones asíncronas por email vía AWS SQS/SES).
+Mini-ecosistema de evaluación de créditos compuesto por un Frontend React, tres microservicios Java Quarkus (`ms-credit-evaluation` orquestador, `ms-risk` riesgos mock, `ms-notifications` notificaciones asíncronas) y **Keycloak** como proveedor de identidad OIDC.
 
 ---
 
@@ -26,17 +26,17 @@ Mini-ecosistema de evaluación de créditos compuesto por un Frontend React y cu
 
 | Capa | Tecnología |
 |------|-----------|
-| Frontend | React 18, TypeScript, Axios |
+| Frontend | React 18, TypeScript, Axios, Keycloak JS Adapter |
 | ms-credit-evaluation | Java 21, Quarkus 3.x, Hibernate ORM Panache |
 | ms-risk | Java 21, Quarkus 3.x |
-| ms-auth | Java 21, Quarkus 3.x, SmallRye JWT Build |
 | ms-notifications | Java 21, Quarkus 3.x, AWS SDK v2 |
+| IAM / Autenticación | Keycloak 24.x (OIDC + OAuth2) |
 | Base de Datos (ms-credit-evaluation) | PostgreSQL 16 — `creditos_db` |
-| Base de Datos (ms-auth) | PostgreSQL 16 — `auth_db` |
 | Base de Datos (ms-notifications) | PostgreSQL 16 — `notifications_db` |
+| Base de Datos (Keycloak) | PostgreSQL 16 — `keycloak_db` (gestionada por Keycloak) |
 | Mensajería | AWS SQS + AWS SES |
 | Comunicación ms-credit-evaluation ↔ ms-risk | REST (HTTP/1.1) + MicroProfile REST Client |
-| Comunicación ms-credit-evaluation ↔ ms-auth | Ninguna en runtime — JWT validado con clave pública compartida |
+| Autenticación ms-credit-evaluation | JWT validado contra JWKS de Keycloak (sin llamadas runtime síncronas) |
 | Comunicación ms-credit-evaluation → ms-notifications | Asíncrona vía AWS SQS (fire-and-forget) |
 | Contenedores | Docker + Docker Compose |
 
@@ -45,35 +45,36 @@ Mini-ecosistema de evaluación de créditos compuesto por un Frontend React y cu
 ## Arquitectura en una Línea
 
 ```
-[React UI] ──REST──> [ms-auth :8082] ──JWT──> [React UI]
-                                                    │
+[React UI] ──OIDC/PKCE──> [Keycloak :9000] ──JWT──> [React UI]
+                                                           │
 [React UI] ──REST+JWT──> [ms-credit-evaluation :8080] ──REST──> [ms-risk :8081]
-                                    │                                
-                               [creditos_db]                     
-                                    │                                
+                                    │
+                               [creditos_db]
+                                    │
                                [AWS SQS] ──consume──> [ms-notifications :8083]
                                                                │          │
                                                          [AWS SES]  [notifications_db]
 
-[ms-auth] ──escribe──> [auth_db]
+[Keycloak] ──escribe──> [keycloak_db]
+[ms-credit-evaluation valida JWT contra JWKS de Keycloak]
 ```
 
 ---
 
 ## Funcionalidades del Sistema
 
-### ms-auth (nuevo, desacoplado)
-- Servicio independiente dedicado a identidad y acceso
-- JWT stateless firmado con RS256 (SmallRye JWT Build)
-- Registro de nuevos usuarios (solo por `ADMIN`)
-- Roles: `ADMIN`, `ANALYST`, `VIEWER`
-- Base de datos propia: `auth_db`
-- ms-credit-evaluation valida JWT usando la clave pública de ms-auth sin llamarlo en runtime
+### Keycloak (IAM — Identity and Access Management)
+- Proveedor de identidad centralizado (OIDC / OAuth2)
+- Flujo de login: Authorization Code + PKCE desde el Frontend
+- Emite JWT firmados con RS256; ms-credit-evaluation los valida contra el JWKS endpoint de Keycloak
+- Gestión de usuarios, credenciales y roles vía Keycloak Admin Console o Admin REST API
+- Roles del realm: `ADMIN`, `ANALYST`, `VIEWER`
+- Base de datos propia: `keycloak_db` (gestionada internamente por Keycloak)
 
-### ms-credit-evaluation (simplificado)
-- Solo responsabilidad: orquestar evaluaciones de crédito
-- Valida JWT con la clave pública compartida de ms-auth
-- Sin gestión de usuarios ni emisión de tokens
+### ms-credit-evaluation
+- Única responsabilidad: orquestar evaluaciones de crédito
+- Valida JWT contra JWKS de Keycloak (`/realms/banco/protocol/openid-connect/certs`)
+- Sin gestión de usuarios ni emisión de tokens — todo delegado a Keycloak
 - Base de datos propia: `creditos_db`
 
 ### ms-notifications (desacoplado)

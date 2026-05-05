@@ -93,29 +93,11 @@
 
 ## ADR-004: JWT Stateless vs Keycloak para autenticación
 
-**Estado:** Aceptado  
-**Fecha:** 2026-05-05  
-**Contexto:** El sistema requiere autenticación, autorización por roles y gestión de usuarios.
+**Estado:** Supersedido por ADR-010  
+**Fecha original:** 2026-05-05  
+**Supersedido en:** 2026-05-05
 
-### Opciones evaluadas
-
-| Criterio | Keycloak | JWT Stateless (SmallRye) |
-|----------|:---:|:---:|
-| Complejidad de deploy | Alta (servicio extra) | **Baja (embebido en ms-credit-evaluation)** |
-| Gestión de usuarios | ✅ Completa (UI admin) | Manual (endpoints propios) |
-| SSO / Federación LDAP | ✅ | ❌ |
-| Revocación inmediata | ✅ | ❌ (mitigable con blacklist) |
-| Para este proyecto | Overkill | **Suficiente** |
-| Curva de aprendizaje | Alta | **Baja** |
-
-### Decisión
-**SmallRye JWT stateless** porque:
-- Keycloak agrega un componente de infraestructura complejo innecesario para este alcance
-- El sistema tiene usuarios internos (no SSO con Google/LDAP)
-- 3 roles simples (ADMIN, ANALYST, VIEWER) no justifican un IAM externo
-- JWT con RS256 es seguro y estándar para microservicios
-
-> **Migración futura a Keycloak** sería directa: cambiar `mp.jwt.verify.publickey.location` al JWKS de Keycloak y actualizar los claims de roles.
+La decisión original optó por SmallRye JWT stateless (ms-auth propio) por simplicidad. Esta decisión fue revisada y reemplazada por **ADR-010** al adoptar Keycloak como IAM. Ver ADR-010 para la justificación completa.
 
 ---
 
@@ -231,6 +213,8 @@ Si ms-risk falla repetidamente, el Circuit Breaker abre y se retorna 503 al clie
 
 ## ADR-008: Desacoplamiento de Identidad en Microservicio Independiente (ms-auth)
 
+> **Nota:** ms-auth fue posteriormente reemplazado por Keycloak (ADR-010). El principio de separación de identidad del dominio de negocio se mantiene — solo cambia la implementación.
+
 **Estado:** Aceptado  
 **Fecha:** 2026-05-05  
 **Contexto:** Originalmente, la autenticación y gestión de usuarios estaba embebida en el ms-credit-evaluation. Se evaluó si extraer esta responsabilidad a un servicio propio aportaba beneficios reales dado el tamaño del sistema.
@@ -259,6 +243,45 @@ Si ms-risk falla repetidamente, el Circuit Breaker abre y se retorna 503 al clie
 - El frontend hace dos tipos de llamadas: a ms-auth para autenticarse y a ms-credit-evaluation para operar.
 - La clave pública RSA debe estar disponible en el build de ms-credit-evaluation (como archivo PEM) o descargarse de `GET /v1/auth/public-key` de ms-auth durante el arranque.
 - Se agrega un contenedor al Docker Compose de desarrollo.
+
+---
+
+## ADR-010: Adopción de Keycloak como IAM
+
+**Estado:** Aceptado  
+**Fecha:** 2026-05-05  
+**Contexto:** El sistema tenía un microservicio propio (`ms-auth`) para gestionar usuarios, roles y emitir JWT. Se evaluó si adoptar Keycloak aportaba beneficios reales frente a mantener el IAM propio.
+
+### Opciones evaluadas
+
+| Criterio | ms-auth propio (SmallRye JWT) | Keycloak 24.x |
+|----------|:---:|:---:|
+| Complejidad de deploy | Baja (Quarkus + PostgreSQL) | Media (contenedor Keycloak ~512MB+) |
+| Gestión de usuarios | Manual (endpoints REST propios) | **✅ Admin Console + Admin REST API** |
+| SSO / Federación LDAP | ❌ | **✅ out-of-the-box** |
+| Revocación inmediata de tokens | ❌ (stateless) | **✅ logout activo + session management** |
+| Brute force protection | Manual (código propio) | **✅ nativo, configurable** |
+| Política de contraseñas | Manual (regex en código) | **✅ configurable sin código** |
+| PKCE / OAuth2 compliant | Parcial | **✅ estándar** |
+| Migración a otro IdP futuro | Requiere reemplazar ms-auth | **✅ solo cambia URL JWKS** |
+| Mantenimiento de seguridad | Responsabilidad del equipo | **✅ Keycloak CVEs parchados upstream** |
+| Código a mantener | Alto (auth logic, BCrypt, JWT build) | **Mínimo (solo configuración)** |
+
+### Decisión
+**Keycloak 24.x** porque:
+
+1. **Elimina código de seguridad propio**: el equipo deja de mantener lógica de hashing, emisión de JWT, gestión de sesiones y protección contra ataques — todo lo gestiona Keycloak.
+2. **Estándar OIDC/OAuth2**: cualquier cliente que entienda OIDC puede integrarse sin cambios en ms-credit-evaluation.
+3. **Revocación real**: Keycloak permite logout activo e invalidar sesiones sin esperar la expiración del token.
+4. **Escalabilidad futura**: SSO, federación LDAP/AD, social login son posibles sin modificar el sistema de créditos.
+5. **Acoplamiento mínimo**: ms-credit-evaluation solo necesita la URL del JWKS. Reemplazar Keycloak por Auth0, AWS Cognito o cualquier OIDC Provider implica cambiar una línea en `application.properties`.
+
+### Consecuencias
+- ms-auth se elimina del sistema (código, contenedor, `auth_db`)
+- Se agrega Keycloak como contenedor en Docker Compose (puerto host `9000`, imagen oficial `quay.io/keycloak/keycloak:24`)
+- Frontend migra de `POST /v1/auth/login` propio a OIDC Authorization Code + PKCE con `keycloak-js`
+- ms-credit-evaluation cambia `mp.jwt.verify.publickey.location` al JWKS de Keycloak
+- La gestión de usuarios pasa completamente a Keycloak Admin Console / Admin REST API
 
 ---
 
@@ -304,9 +327,10 @@ Si ms-risk falla repetidamente, el Circuit Breaker abre y se retorna 503 al clie
 | ADR-001 | Quarkus 3.x | Spring Boot | MicroProfile nativo, bajo footprint |
 | ADR-002 | REST para ms-credit-evaluation ↔ ms-risk | gRPC | Simplicidad, latencia dominada por mock |
 | ADR-003 | PostgreSQL | MongoDB | Modelo relacional, ACID, datos financieros |
-| ADR-004 | JWT Stateless | Keycloak | Sin overhead de servicio externo |
+| ADR-004 | ~~JWT Stateless~~ → **Supersedido por ADR-010** | — | — |
 | ADR-005 | AWS SQS | Llamada directa | Desacoplamiento, resiliencia, DLQ |
 | ADR-006 | Módulo 10 custom | Regex simple | Validación matemática real de cédulas |
 | ADR-007 | Llamadas paralelas a ms-risk | Secuencial | 43% menos latencia por request |
-| ADR-008 | Auth en ms-auth independiente | Auth embebida en ms-credit-evaluation | SRP, aislamiento de BD, cero acoplamiento runtime |
+| ADR-008 | Auth en microservicio independiente (principio) | Auth embebida en ms-credit-evaluation | SRP, aislamiento de BD, cero acoplamiento runtime |
 | ADR-009 | Notificaciones en ms-notifications independiente | Worker embebido en ms-credit-evaluation | SRP, resiliencia aislada, escalabilidad diferenciada |
+| ADR-010 | Keycloak como IAM | ms-auth propio (SmallRye JWT) | OIDC estándar, sin código de seguridad propio, revocación real, extensibilidad futura |

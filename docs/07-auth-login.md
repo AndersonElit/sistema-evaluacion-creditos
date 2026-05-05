@@ -1,375 +1,341 @@
-# ms-auth — Autenticación, Login y Gestión de Usuarios
+# Keycloak — Autenticación, Login y Gestión de Usuarios
 
 ## 1. Arquitectura del Servicio
 
-La autenticación y gestión de identidad está implementada como un **microservicio independiente (ms-auth)** que corre en el puerto `8082`. Esta separación garantiza que ms-credit-evaluation (Orquestador) tenga una única responsabilidad: evaluar créditos.
+La autenticación y gestión de identidad está delegada a **Keycloak 24.x**, un OIDC Provider de grado enterprise. Keycloak corre como contenedor independiente en el puerto `9000` (host) bajo el realm `banco`.
 
-**Principio de integración:** ms-auth emite JWT firmados con una clave privada RSA. ms-credit-evaluation y cualquier otro servicio validan esos tokens usando únicamente la clave pública RSA, **sin llamadas en runtime a ms-auth**.
-
-## 2. Estrategia de Autenticación
-
-Se usa **JWT stateless** con el estándar **MicroProfile JWT** implementado en Quarkus vía `quarkus-smallrye-jwt`. No se usa Keycloak ni ningún servidor de autorización externo para mantener la arquitectura simple.
-
-### Justificación: JWT stateless vs. sesiones en BD
-
-| Criterio | JWT Stateless | Sesiones en BD |
-|----------|:---:|:---:|
-| Escalabilidad horizontal | ✅ Sin sesión compartida | ❌ Requiere sesión centralizada |
-| Revocación inmediata | ❌ Esperar expiración | ✅ Borrar sesión |
-| Rendimiento | ✅ Sin I/O por validación | ❌ Query por cada request |
-| Complejidad | ✅ Solo firma y verificación | ❌ Gestión de store |
-| Stateless | ✅ Ideal para microservicios | ❌ Estado compartido |
-
-**Decisión:** JWT stateless es la opción correcta para un sistema de microservicios. La revocación se maneja con tokens de corta duración (8h) y la posibilidad de agregar un blocklist en Redis en el futuro si se requiere logout inmediato.
+**Principio de integración:** Keycloak emite JWT firmados con RS256 y expone un JWKS endpoint. ms-credit-evaluation valida los tokens consultando ese endpoint — sin ningún código propio de autenticación.
 
 ---
 
-## 3. Flujo de Autenticación
+## 2. Flujo de Autenticación (Authorization Code + PKCE)
 
 ```
-PASO 1 — Login (solo ms-auth):
+PASO 1 — Login (Frontend redirige a Keycloak):
 
-┌──────────┐  POST /v1/auth/login   ┌────────────────────────────────┐
-│ Frontend │ ──────────────────────>│  ms-auth  :8082                │
-│          │  {email, password}     │  1. Busca user en auth_db      │
-│          │ <──────────────────── │  2. bcrypt.verify(pwd)         │
-│          │  {accessToken,         │  3. Genera JWT (RS256)         │
-│          │   expiresIn, usuario}  │                                │
-└──────────┘                        └────────────────────────────────┘
+┌──────────┐  GET /realms/banco/protocol/openid-connect/auth   ┌─────────────────────┐
+│ Frontend │ ────────────────────────────────────────────────> │  Keycloak  :9000     │
+│ React    │  ?client_id=credit-evaluation-spa                 │  Realm: banco        │
+│          │  &response_type=code                              │                     │
+│          │  &redirect_uri=http://localhost:3000/callback     │  Muestra pantalla   │
+│          │  &scope=openid profile email                      │  de login propia     │
+│          │  &code_challenge=<PKCE_S256>                      └──────────┬──────────┘
+└──────────┘                                                              │
+                                                                          │ redirect con code
+                                                                          ▼
+PASO 2 — Intercambio de code por tokens:
 
-PASO 2 — Uso del JWT (ms-credit-evaluation, sin llamar a ms-auth):
+┌──────────┐  POST /realms/banco/protocol/openid-connect/token  ┌─────────────────────┐
+│ Frontend │ ────────────────────────────────────────────────> │  Keycloak  :9000     │
+│          │  grant_type=authorization_code                     │  Valida code + PKCE  │
+│          │  code=<code>                                       │  Genera JWT RS256    │
+│          │  code_verifier=<PKCE_verifier>                     └──────────┬──────────┘
+│          │ <────────────────────────────────────────────────             │
+│          │  { access_token, refresh_token, id_token }                    │
+└──────────┘
 
-┌──────────┐  GET /v1/credit-evaluations    ┌────────────────────────────────┐
-│ Frontend │ ─────────────────────────────> │  ms-credit-evaluation  :8080   │
-│          │  Authorization: Bearer <jwt>   │  1. Verifica firma con         │
-│          │                                │     clave pública RSA          │
-│          │ <───────────────────────────── │  2. Verifica expiración        │
-│          │  200 OK + datos                │  3. Extrae rol (groups)        │
-└──────────┘                                │  4. Verifica @RolesAllowed     │
-                                            └────────────────────────────────┘
-                                            (no hay llamada HTTP a ms-auth)
+PASO 3 — Uso del JWT (ms-credit-evaluation valida contra JWKS de Keycloak):
+
+┌──────────┐  GET /v1/credit-evaluations                   ┌─────────────────────────────┐
+│ Frontend │ ─────────────────────────────────────────────>│  ms-credit-evaluation :8080  │
+│          │  Authorization: Bearer <access_token>         │  1. Descarga JWKS de         │
+│          │                                               │     Keycloak (cacheado)      │
+│          │ <──────────────────────────────────────────── │  2. Verifica firma RS256      │
+│          │  200 OK + datos                               │  3. Verifica expiración       │
+└──────────┘                                               │  4. Extrae rol (groups claim) │
+                                                           │  5. Verifica @RolesAllowed    │
+                                                           └─────────────────────────────┘
+                                                           (no hay llamada HTTP a Keycloak
+                                                            por cada request — cache JWKS)
 ```
 
 ---
 
-## 4. Estructura del JWT
+## 3. Estructura del JWT emitido por Keycloak
 
 ```json
 {
   "header": {
     "alg": "RS256",
-    "typ": "JWT"
+    "typ": "JWT",
+    "kid": "abc123..."
   },
   "payload": {
-    "iss": "https://api.banco.com",
-    "sub": "analyst@banco.com",
+    "iss": "http://localhost:9000/realms/banco",
+    "sub": "550e8400-e29b-41d4-a716-446655440000",
+    "aud": "credit-evaluation-spa",
+    "exp": 1746446700,
     "iat": 1746446400,
-    "exp": 1746475200,
-    "groups": ["ANALYST"],
-    "upn": "analyst@banco.com",
-    "userId": "550e8400-e29b-41d4-a716-446655440000",
-    "nombreCompleto": "María Pérez"
+    "jti": "unique-token-id",
+    "email": "analyst@banco.com",
+    "name": "María Pérez",
+    "preferred_username": "analyst@banco.com",
+    "realm_access": {
+      "roles": ["ANALYST", "offline_access", "uma_authorization"]
+    },
+    "groups": ["ANALYST"]
   }
 }
 ```
 
 **Notas:**
-- `groups` es el claim estándar de MicroProfile JWT para roles
-- `upn` (User Principal Name) es requerido por MicroProfile JWT
-- `sub` = email del usuario para identificación única
-- Firmado con **RS256** (clave privada en el servidor, pública disponible para verificación)
+- `groups` se agrega vía un **Protocol Mapper** configurado en el Client de Keycloak para compatibilidad con `@RolesAllowed` de SmallRye JWT
+- `sub` es el UUID del usuario en Keycloak — se usa como `evaluado_por_id` (referencia débil) en `credit_evaluations`
+- `iss` debe coincidir con `mp.jwt.verify.issuer` en ms-credit-evaluation
+- Access token por defecto: **5 minutos** (configurable en Realm Settings). Keycloak JS renueva automáticamente con el refresh token
 
 ---
 
-## 5. Configuración Quarkus
+## 4. Configuración Keycloak
 
-### Dependencias (`pom.xml`)
+### Docker Compose (desarrollo local)
 
-```xml
-<!-- JWT Generation + Validation -->
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-smallrye-jwt</artifactId>
-</dependency>
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-smallrye-jwt-build</artifactId>
-</dependency>
+```yaml
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    command: start-dev
+    ports:
+      - "9000:8080"
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres-keycloak:5432/keycloak_db
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: postgres
+    depends_on:
+      - postgres-keycloak
 
-<!-- Password hashing -->
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-elytron-security-common</artifactId>
-</dependency>
+  postgres-keycloak:
+    image: postgres:16
+    ports:
+      - "5435:5432"
+    environment:
+      POSTGRES_DB: keycloak_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
 ```
 
-### `application.properties` — ms-auth (Auth)
+> Para simplificar el entorno local se puede usar `KC_DB=dev-file` (H2 embebido) eliminando el contenedor `postgres-keycloak`. No usar en producción.
 
-```properties
-quarkus.http.port=8082
+### Configuración del Realm `banco`
 
-# ── JWT Generation (SmallRye JWT Build) ─────────────────────
-smallrye.jwt.sign.key.location=META-INF/resources/privateKey.pem
-mp.jwt.token.expiration.time=28800
-
-# ── JWT Validation (para los endpoints protegidos de ms-auth) ───
-mp.jwt.verify.publickey.location=META-INF/resources/publicKey.pem
-mp.jwt.verify.issuer=https://auth.banco.com
-
-# ── Password hashing ─────────────────────────────────────────
-quarkus.security.users.embedded.enabled=false
-
-# ── Datasource ───────────────────────────────────────────────
-quarkus.datasource.jdbc.url=jdbc:postgresql://${AUTH_DB_HOST:localhost}:5433/auth_db
+```bash
+# Importar realm via Admin CLI o exportar/importar JSON
+# Realm: banco
+# Token lifespan: 300s (access) / 1800s (refresh)
+# SSL: none (dev) / required (prod)
 ```
 
-### `application.properties` — ms-credit-evaluation (validación JWT sin generación)
+### Configuración del Client `credit-evaluation-spa`
+
+```
+Client ID:        credit-evaluation-spa
+Client Protocol:  openid-connect
+Access Type:      public  (sin client secret — PKCE obligatorio)
+Valid Redirect URIs:
+  http://localhost:3000/*
+  https://creditos.banco.com/*
+Web Origins:
+  http://localhost:3000
+  https://creditos.banco.com
+```
+
+### Protocol Mapper — roles → groups claim
+
+```
+Mapper Type:       User Realm Role
+Token Claim Name:  groups
+Claim JSON Type:   String
+Add to ID token:   ON
+Add to access token: ON
+```
+
+---
+
+## 5. Configuración Quarkus — ms-credit-evaluation
+
+### `application.properties`
 
 ```properties
 quarkus.http.port=8080
 
-# ── JWT Validation únicamente — ms-credit-evaluation no genera tokens ────────
-mp.jwt.verify.publickey.location=META-INF/resources/publicKey.pem
-mp.jwt.verify.issuer=https://auth.banco.com
+# ── JWT Validation via Keycloak JWKS ─────────────────────────
+mp.jwt.verify.publickey.location=http://keycloak:9000/realms/banco/protocol/openid-connect/certs
+mp.jwt.verify.issuer=http://localhost:9000/realms/banco
 
-# La clave pública es la misma que usa ms-auth para firmar.
-# Se distribuye como archivo PEM copiado en el build de ms-credit-evaluation,
-# o descargada de GET http://auth-service:8082/v1/auth/public-key en startup.
-# ms-credit-evaluation NO necesita la clave privada.
+# En producción:
+# mp.jwt.verify.publickey.location=https://auth.banco.com/realms/banco/protocol/openid-connect/certs
+# mp.jwt.verify.issuer=https://auth.banco.com/realms/banco
+
+# ── Roles — leer del claim "groups" (mapeado desde realm_access.roles)
+quarkus.smallrye-jwt.role-paths=groups
+
+# ── CORS ─────────────────────────────────────────────────────
+quarkus.http.cors=true
+quarkus.http.cors.origins=http://localhost:3000,https://creditos.banco.com
+quarkus.http.cors.methods=GET,POST,OPTIONS
+quarkus.http.cors.headers=Content-Type,Authorization
 ```
 
-### Generación del par de claves RSA
+### Dependencias (`pom.xml`)
 
-```bash
-# Generar clave privada (2048 bits)
-openssl genrsa -out privateKey.pem 2048
-
-# Extraer clave pública
-openssl rsa -in privateKey.pem -pubout -out publicKey.pem
-
-# Colocar en: src/main/resources/META-INF/resources/
+```xml
+<!-- JWT Validation únicamente — no se genera tokens -->
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-smallrye-jwt</artifactId>
+</dependency>
 ```
 
----
-
-## 6. Implementación de Endpoints (en ms-auth)
-
-### `AuthResource.java`
+### Protección de Endpoints por Rol
 
 ```java
-@Path("/v1/auth")
-@Produces(MediaType.APPLICATION_JSON)
-@Consumes(MediaType.APPLICATION_JSON)
-public class AuthResource {
-
-    @Inject AuthService authService;
-
-    @POST
-    @Path("/login")
-    @PermitAll
-    public Response login(@Valid LoginRequest request) {
-        LoginResponse response = authService.login(request);
-        return Response.ok(response).build();
-    }
-
-    @POST
-    @Path("/users")
-    @RolesAllowed("ADMIN")
-    public Response crearUsuario(@Valid CrearUsuarioRequest request) {
-        UsuarioResponse usuario = authService.crearUsuario(request);
-        return Response.status(Response.Status.CREATED).entity(usuario).build();
-    }
-
-    @GET
-    @Path("/users")
-    @RolesAllowed("ADMIN")
-    public List<UsuarioResponse> listarUsuarios() {
-        return authService.listarUsuarios();
-    }
-
-    @GET
-    @Path("/users/{userId}")
-    @RolesAllowed("ADMIN")
-    public UsuarioResponse obtenerUsuario(@PathParam("userId") UUID userId) {
-        return authService.obtenerPorId(userId);
-    }
-
-    @PUT
-    @Path("/users/{userId}/roles")
-    @RolesAllowed("ADMIN")
-    public UsuarioResponse actualizarRol(
-            @PathParam("userId") UUID userId,
-            @Valid ActualizarRolRequest request) {
-        return authService.actualizarRol(userId, request.getRol());
-    }
-}
-```
-
-### `AuthService.java`
-
-```java
-@ApplicationScoped
-public class AuthService {
-
-    @Inject UserRepository userRepository;
-    @Inject BcryptPasswordEncoder passwordEncoder;
-
-    @Transactional(readOnly = true)
-    public LoginResponse login(LoginRequest request) {
-        User user = userRepository.findByEmail(request.getEmail())
-            .orElseThrow(() -> new UnauthorizedException("Credenciales inválidas"));
-
-        if (!passwordEncoder.verify(request.getPassword(), user.getPasswordHash())) {
-            throw new UnauthorizedException("Credenciales inválidas");
-        }
-
-        if (!user.isActivo()) {
-            throw new UnauthorizedException("Usuario desactivado");
-        }
-
-        String token = Jwt.issuer("https://api.banco.com")
-            .subject(user.getEmail())
-            .upn(user.getEmail())
-            .groups(user.getRol().getNombre())
-            .claim("userId", user.getId().toString())
-            .claim("nombreCompleto", user.getNombreCompleto())
-            .expiresIn(Duration.ofHours(8))
-            .sign();
-
-        return new LoginResponse(token, "Bearer", 28800, UsuarioMapper.toResponse(user));
-    }
-
-    @Transactional
-    public UsuarioResponse crearUsuario(CrearUsuarioRequest request) {
-        if (userRepository.existsByEmail(request.getEmail())) {
-            throw new ConflictException("Email ya registrado");
-        }
-
-        User user = new User();
-        user.setEmail(request.getEmail());
-        user.setPasswordHash(passwordEncoder.encode(request.getPassword()));
-        user.setNombreCompleto(request.getNombreCompleto());
-        user.setRol(Rol.valueOf(request.getRol()));
-        user.setActivo(true);
-        userRepository.persist(user);
-
-        return UsuarioMapper.toResponse(user);
-    }
-}
-```
-
----
-
-## 7. Protección de Endpoints por Rol
-
-Los endpoints de ms-credit-evaluation aplican `@RolesAllowed` sobre el JWT emitido por ms-auth:
-
-```java
-// En ms-credit-evaluation — Solo ADMIN y ANALYST pueden evaluar
+// Solo ADMIN y ANALYST pueden crear evaluaciones
 @POST
 @Path("/v1/credit-evaluations")
 @RolesAllowed({"ADMIN", "ANALYST"})
-public Response evaluarCredito(...) { ... }
+public Response evaluarCredito(@Context SecurityContext ctx, ...) {
+    String evaluadorId = jwt.getSubject(); // sub claim = UUID del usuario en Keycloak
+    ...
+}
 
-// En ms-credit-evaluation — Todos los roles autenticados pueden ver la lista
+// Todos los roles autenticados pueden ver la lista
 @GET
 @Path("/v1/credit-evaluations")
 @Authenticated
 public List<EvaluacionResponse> listar(...) { ... }
-
-// En ms-auth — Solo ADMIN puede gestionar usuarios
-@POST
-@Path("/v1/auth/users")
-@RolesAllowed("ADMIN")
-public Response crearUsuario(...) { ... }
 ```
 
 ---
 
-## 8. Gestión de Roles
+## 6. Configuración Frontend — keycloak-js
+
+### Instalación
+
+```bash
+npm install keycloak-js
+```
+
+### `keycloak.ts`
+
+```typescript
+import Keycloak from 'keycloak-js';
+
+const keycloak = new Keycloak({
+  url: 'http://localhost:9000',
+  realm: 'banco',
+  clientId: 'credit-evaluation-spa',
+});
+
+export default keycloak;
+```
+
+### Inicialización en `main.tsx`
+
+```typescript
+import keycloak from './keycloak';
+
+keycloak.init({
+  onLoad: 'login-required',
+  pkceMethod: 'S256',
+  checkLoginIframe: false,
+}).then((authenticated) => {
+  if (authenticated) {
+    ReactDOM.createRoot(document.getElementById('root')!).render(
+      <App keycloak={keycloak} />
+    );
+  }
+});
+
+// Renovación automática del token (30s antes de expirar)
+keycloak.onTokenExpired = () => {
+  keycloak.updateToken(30).catch(() => keycloak.logout());
+};
+```
+
+### Axios interceptor — adjuntar Bearer token
+
+```typescript
+axiosInstance.interceptors.request.use(async (config) => {
+  await keycloak.updateToken(30); // renueva si queda < 30s
+  config.headers['Authorization'] = `Bearer ${keycloak.token}`;
+  return config;
+});
+```
+
+---
+
+## 7. Gestión de Usuarios y Roles
 
 ### Roles del Sistema
 
 | Rol | Código | Descripción |
 |-----|--------|-------------|
-| Administrador | `ADMIN` | Control total: gestiona usuarios, crea evaluaciones, ve todo |
+| Administrador | `ADMIN` | Control total: gestiona evaluaciones, ve todo. Gestiona usuarios vía Keycloak Admin Console |
 | Analista | `ANALYST` | Crea y consulta evaluaciones crediticias |
 | Observador | `VIEWER` | Solo lectura de evaluaciones ya realizadas |
 
-### Reglas de Negocio de Roles
+### Gestión vía Keycloak Admin Console
 
-1. Solo `ADMIN` puede crear usuarios nuevos
-2. Solo `ADMIN` puede cambiar el rol de otro usuario
-3. Un usuario no puede cambiar su propio rol
-4. No se puede eliminar físicamente un usuario, solo desactivar (soft delete)
-5. Un `ADMIN` no puede degradarse a sí mismo si es el único `ADMIN`
+La gestión de usuarios se realiza directamente en Keycloak (`http://localhost:9000/admin`), no mediante endpoints del sistema de créditos:
 
----
+| Operación | Keycloak Admin Console | Keycloak Admin REST API |
+|-----------|----------------------|------------------------|
+| Crear usuario | Users → Add User | `POST /admin/realms/banco/users` |
+| Asignar rol | Users → Role Mappings | `POST /admin/realms/banco/users/{id}/role-mappings/realm` |
+| Desactivar usuario | Users → Edit → Enabled = OFF | `PUT /admin/realms/banco/users/{id}` |
+| Resetear contraseña | Users → Credentials → Reset | `PUT /admin/realms/banco/users/{id}/reset-password` |
 
-## 9. Seguridad Adicional
+### Usuario Admin Inicial
 
-### CORS Seguro
+```bash
+# Crear primer usuario admin vía Keycloak Admin CLI
+/opt/keycloak/bin/kcadm.sh config credentials \
+  --server http://localhost:9000 \
+  --realm master \
+  --user admin \
+  --password admin
 
-Cada microservicio configura su propio CORS. ms-auth acepta llamadas del frontend para login:
+# Crear realm
+/opt/keycloak/bin/kcadm.sh create realms \
+  -s realm=banco \
+  -s enabled=true
 
-```properties
-# application.properties de ms-auth
-quarkus.http.cors=true
-quarkus.http.cors.origins=http://localhost:3000,https://creditos.banco.com
-quarkus.http.cors.methods=GET,POST,PUT,OPTIONS
-quarkus.http.cors.headers=Content-Type,Authorization
-quarkus.http.cors.exposed-headers=Location
-quarkus.http.cors.access-control-max-age=24H
-```
+# Crear usuario analista
+/opt/keycloak/bin/kcadm.sh create users \
+  -r banco \
+  -s username=analyst@banco.com \
+  -s email=analyst@banco.com \
+  -s enabled=true
 
-### Rate Limiting (protección contra brute force en login)
-
-```java
-// Usando Quarkus Cache para contar intentos fallidos
-@ApplicationScoped
-public class LoginAttemptService {
-    private final Map<String, AtomicInteger> failedAttempts = new ConcurrentHashMap<>();
-    private static final int MAX_ATTEMPTS = 5;
-
-    public void registrarFallo(String email) {
-        failedAttempts.computeIfAbsent(email, k -> new AtomicInteger(0))
-                      .incrementAndGet();
-    }
-
-    public boolean estaBloqueado(String email) {
-        return failedAttempts.getOrDefault(email, new AtomicInteger(0))
-                             .get() >= MAX_ATTEMPTS;
-    }
-}
-```
-
-### Validación de Contraseña
-
-```java
-// Política: mínimo 8 chars, 1 mayúscula, 1 número, 1 símbolo
-@Pattern(
-    regexp = "^(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,}$",
-    message = "La contraseña debe tener mínimo 8 caracteres, 1 mayúscula, 1 número y 1 símbolo"
-)
-private String password;
+# Asignar rol
+/opt/keycloak/bin/kcadm.sh add-roles \
+  -r banco \
+  --uusername analyst@banco.com \
+  --rolename ANALYST
 ```
 
 ---
 
-## 10. Flujo de Creación de Usuario (Admin)
+## 8. Seguridad Adicional
 
-```
-[Admin UI]  →  POST /v1/auth/users  →  [ms-auth :8082]
-                                              │
-                                       ¿Email existe? (auth_db)
-                                       ├── Sí → 409 Conflict
-                                       └── No
-                                              │
-                                       Encode password (bcrypt 12)
-                                              │
-                                       Persist user + role en auth_db
-                                              │
-                                       Return 201 Created
-                                              │
-                                       [Admin UI muestra nuevo usuario]
-```
+### Revocación de Tokens
+
+A diferencia de JWT stateless, Keycloak permite **revocación inmediata**:
+- Logout activo: `POST /realms/banco/protocol/openid-connect/logout` (invalida refresh token)
+- Revocar todas las sesiones de un usuario: Admin Console → Users → Sessions → Logout All
+
+### Política de Contraseñas (Realm Settings)
+
+Configurable en Keycloak Admin Console → Authentication → Password Policy:
+- Longitud mínima: 8 caracteres
+- Al menos 1 mayúscula, 1 dígito, 1 símbolo especial
+- Historial: últimas 3 contraseñas no reutilizables
+
+### Brute Force Protection
+
+Keycloak protege contra brute force de forma nativa:
+- Admin Console → Realm Settings → Security Defenses → Brute Force Detection
+- Bloqueo temporal tras N intentos fallidos (configurable)

@@ -83,7 +83,7 @@ EstadoEvaluacion
 | `EvaluacionCompletada` | Resultado calculado y persistido | Regla de negocio evaluada |
 | `EvaluacionFallida` | Error al contactar servicio de riesgos | Timeout o error 5xx de ms-risk |
 
-> **Nota:** Este bounded context **no gestiona usuarios ni emite tokens JWT**. Delega completamente la identidad al Bounded Context de Identidad y Acceso (ms-auth). El `evaluadoPor` es solo una referencia por ID/email extraída del JWT, no una consulta a ms-auth.
+> **Nota:** Este bounded context **no gestiona usuarios ni emite tokens JWT**. Delega completamente la identidad a Keycloak (Bounded Context de Identidad y Acceso). El `evaluadoPor` es solo el `sub` claim del JWT de Keycloak — una referencia débil por UUID, no una consulta a Keycloak en runtime.
 
 ---
 
@@ -119,43 +119,42 @@ Deuda
 
 ### 3.3 Bounded Context: Identidad y Acceso (`identity-access`)
 
-**Responsabilidad:** Gestionar usuarios, credenciales, roles y emisión de tokens JWT. Implementado como **ms-auth independiente** (`localhost:8082`). El resto del sistema no lo llama en runtime; solo comparte la clave pública RSA para verificación de tokens.
+**Responsabilidad:** Gestionar usuarios, credenciales, roles y emisión de tokens JWT. Implementado mediante **Keycloak 24.x** como OIDC Provider externo (`localhost:9000`, realm `banco`). El sistema de créditos no desarrolla ni mantiene código de identidad — Keycloak gestiona todo el ciclo de vida de usuarios y tokens.
 
 #### Lenguaje Ubicuo
 
 | Término | Definición |
 |---------|-----------|
-| `Usuario` | Persona registrada en el sistema con credenciales válidas |
-| `Credenciales` | Email y contraseña bcrypt del usuario |
-| `Token` | JWT firmado que prueba la identidad y los permisos |
-| `Rol` | Conjunto de permisos asignado a un usuario (ADMIN, ANALYST, VIEWER) |
-| `Sesion` | Período de validez del token (stateless, 8 horas) |
+| `Usuario` | Persona registrada en Keycloak con credenciales válidas |
+| `Realm` | Espacio de aislamiento en Keycloak (`banco`) que agrupa usuarios, roles y clientes |
+| `Client` | Aplicación registrada en Keycloak (`credit-evaluation-spa` para el Frontend) |
+| `Token` | JWT firmado por Keycloak con RS256, válido para acceder a ms-credit-evaluation |
+| `Rol` | Realm Role de Keycloak asignado a un usuario (ADMIN, ANALYST, VIEWER) |
+| `Sesion` | Sesión OIDC gestionada por Keycloak (access token 5min + refresh token) |
+| `JWKS` | JSON Web Key Set — endpoint de Keycloak con las claves públicas RSA para verificación |
 
 #### Roles y Permisos
 
-| Rol | Puede evaluar | Puede ver lista | Puede crear usuarios | Puede asignar roles |
-|-----|:---:|:---:|:---:|:---:|
-| `ADMIN` | ✅ | ✅ | ✅ | ✅ |
-| `ANALYST` | ✅ | ✅ | ❌ | ❌ |
-| `VIEWER` | ❌ | ✅ | ❌ | ❌ |
+| Rol | Puede evaluar | Puede ver lista | Puede gestionar usuarios en Keycloak |
+|-----|:---:|:---:|:---:|
+| `ADMIN` | ✅ | ✅ | ✅ (vía Keycloak Admin Console) |
+| `ANALYST` | ✅ | ✅ | ❌ |
+| `VIEWER` | ❌ | ✅ | ❌ |
 
-#### Agregados
+#### Modelo en Keycloak (sin código propio)
 
 ```
-Aggregate Root: Usuario
-├── id: UUID
-├── email: Email (Value Object)
-├── passwordHash: String (bcrypt)
-├── nombreCompleto: String
-├── activo: boolean
-├── creadoEn: Instant
-└── roles: Set<Rol>
-
-Rol
-├── id: UUID
-├── nombre: NombreRol (Enum: ADMIN, ANALYST, VIEWER)
-└── descripcion: String
+Keycloak Realm: banco
+├── Client: credit-evaluation-spa
+│   ├── Protocol: openid-connect
+│   ├── Access Type: public (PKCE, sin client secret)
+│   └── Valid Redirect URIs: http://localhost:3000/*
+├── Realm Roles: ADMIN | ANALYST | VIEWER
+├── Mapper: roles → claim "groups" (compatibilidad SmallRye JWT)
+└── Users: gestionados vía Admin Console / Admin REST API
 ```
+
+> No existen agregados DDD propios para este contexto — Keycloak es el sistema de registro. El `sub` claim del JWT actúa como referencia débil al usuario en `evaluado_por_id`.
 
 ---
 
@@ -202,28 +201,29 @@ Notificacion
 │  │  :8080                 │                     └──────────────────────────┘    │
 │  └───────────┬────────────┘                                                     │
 │              │                                                                   │
-│              │ Conformist                                                        │
-│              │ (consume JWT firmado por ms-auth, sin llamarlo en runtime)        │
-│              │ [clave pública compartida vía PEM]                                │
+│              │ Conformist / Open Host Service                                    │
+│              │ (consume JWT emitido por Keycloak, valida via JWKS endpoint)      │
+│              │ [no hay llamada runtime síncrona — claves cacheadas]              │
 │              │                                                                   │
 │  ┌───────────▼────────────┐                     ┌──────────────────────────┐    │
 │  │  Identidad y Acceso    │                     │  Notificaciones          │    │
 │  │  (Generic)             │                     │  (Supporting)            │    │
-│  │  ms-auth :8082         │                     │  Worker en               │    │
-│  └────────────────────────┘                     │  ms-credit-evaluation    │    │
-│              ▲                                  └──────────────────────────┘    │
-│              │ Usuario interactúa                          ▲                     │
-│              │ (login, gestión)                            │ Published Language  │
-│              │                                             │ SQS Events (async)  │
+│  │  Keycloak :9000        │                     │  ms-notifications :8083  │    │
+│  │  [sistema externo]     │                     └──────────────────────────┘    │
+│  └────────────────────────┘                                ▲                    │
+│              ▲                                             │ Published Language  │
+│              │ OIDC/PKCE (login)                          │ SQS Events (async)  │
+│              │ Admin Console (gestión)                     │                     │
 │              │                                             │                     │
 │           [Frontend] ── REST+JWT ──> [ms-credit-evaluation evalúa y publica]    │
 │                                                                                  │
 │  Relaciones:                                                                     │
 │  → Customer/Supplier: ms-credit-evaluation depende de ms-risk como proveedor    │
-│  → Conformist: ms-credit-evaluation acepta el contrato JWT de ms-auth           │
+│  → Conformist: ms-credit-evaluation acepta el contrato JWT de Keycloak           │
+│    (Open Host Service — OIDC estándar, no un contrato propietario)              │
 │  → Published Language: ms-credit-evaluation publica EvaluacionCompletada        │
 │    en SQS, consumida por ms-notifications                                        │
-│  → ms-auth y ms-notifications son autónomos: no llaman a ms-credit-evaluation   │
+│  → Keycloak y ms-notifications son autónomos: no llaman a ms-credit-evaluation  │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -237,10 +237,11 @@ Notificacion
   EvaluacionCompletada ──> publica en SQS (fire-and-forget)
   EvaluacionFallida    ──> log + respuesta de error al cliente
 
-[Identidad y Acceso — ms-auth]   ← servicio independiente
-  UsuarioCreado        ──> log interno (auth_db)
-  SesionIniciada       ──> emite JWT firmado con clave privada RSA
-  SesionExpirada       ──> cliente recibe 401 (validado en ms-credit-evaluation sin llamar a ms-auth)
+[Identidad y Acceso — Keycloak]   ← sistema externo (OIDC)
+  SesionIniciada       ──> emite JWT RS256 (access_token + refresh_token)
+  TokenRefrescado      ──> cliente renueva JWT antes de expiración (keycloak-js)
+  SesionExpirada       ──> ms-credit-evaluation retorna 401 (validación JWKS cacheada)
+  UsuarioGestionado    ──> Admin Console / Admin REST API (fuera del flujo de negocio)
 
 [Notificaciones — ms-notifications]   ← servicio independiente
   NotificacionEnviada  ──> actualiza estado en notifications_db

@@ -1,37 +1,16 @@
 # Modelo de Base de Datos — PostgreSQL
 
-El sistema utiliza **tres bases de datos independientes**, una por cada microservicio con datos propios:
+El sistema utiliza **dos bases de datos propias**, una por cada microservicio con estado propio. Keycloak gestiona su propia base de datos de forma autónoma.
 
 | Base de datos | Propietario | Tablas |
 |---------------|-------------|--------|
-| `auth_db` | ms-auth | `users`, `roles`, `user_roles` |
 | `creditos_db` | ms-credit-evaluation | `credit_evaluations` |
 | `notifications_db` | ms-notifications | `notifications` |
+| `keycloak_db` | Keycloak (gestionada por Keycloak) | Interna — no se modifica directamente |
 
-La columna `evaluado_por_id` en `credit_evaluations` es una **referencia débil por UUID** al usuario en `auth_db`. No existe foreign key cruzada entre bases de datos; la integridad se garantiza a nivel de aplicación.
+La columna `evaluado_por_id` en `credit_evaluations` es una **referencia débil al `sub` claim del JWT de Keycloak** (UUID del usuario en Keycloak). No existe foreign key cruzada; la integridad se garantiza a nivel de aplicación.
 
 ---
-
-## Base de Datos: `auth_db` — ms-auth
-
-```
-┌────────────────────────────┐         ┌──────────────────────────────┐
-│          users             │         │            roles              │
-├────────────────────────────┤         ├──────────────────────────────┤
-│ PK id              UUID    │         │ PK id              UUID       │
-│    email           VARCHAR │         │    nombre          VARCHAR    │
-│    password_hash   VARCHAR │         │    descripcion     TEXT       │
-│    nombre_completo VARCHAR │         └──────────────────────────────┘
-│    activo          BOOLEAN │                         △
-│    creado_en       TIMESTAMPTZ                       │
-└────────────────────────────┘                        │
-              △                          ┌────────────────────────────┐
-              │                          │         user_roles          │
-              │                          ├────────────────────────────┤
-              └──────────────────────────│ FK user_id         UUID    │
-                                         │ FK role_id         UUID    │
-                                         └────────────────────────────┘
-```
 
 ## Base de Datos: `creditos_db` — ms-credit-evaluation
 
@@ -48,7 +27,7 @@ La columna `evaluado_por_id` en `credit_evaluations` es una **referencia débil 
 │    deuda_mensual_total NUMERIC(15,2) NOT NULL       │
 │    estado_final        VARCHAR(20)  NOT NULL        │
 │    fecha_evaluacion    TIMESTAMPTZ  NOT NULL        │
-│    evaluado_por_id     UUID  [ref. débil a auth_db] │
+│    evaluado_por_id     UUID  [sub claim JWT Keycloak] │
 └────────────────────────────────────────────────────┘
 ```
 
@@ -76,77 +55,7 @@ La columna `evaluado_por_id` en `credit_evaluations` es una **referencia débil 
 
 ## DDL — Scripts de Creación
 
-### `auth_db` — ejecutar en el PostgreSQL de ms-auth
-
-```sql
--- ================================================================
--- EXTENSIONES
--- ================================================================
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";  -- para gen_random_uuid()
-
--- ================================================================
--- TIPOS ENUMERADOS
--- ================================================================
-CREATE TYPE nombre_rol AS ENUM ('ADMIN', 'ANALYST', 'VIEWER');
-
--- ================================================================
--- TABLA: roles
--- ================================================================
-CREATE TABLE roles (
-    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    nombre      nombre_rol  NOT NULL UNIQUE,
-    descripcion TEXT
-);
-
--- Datos iniciales
-INSERT INTO roles (nombre, descripcion) VALUES
-    ('ADMIN',   'Administrador del sistema: gestiona usuarios y puede evaluar'),
-    ('ANALYST', 'Analista de crédito: puede crear y ver evaluaciones'),
-    ('VIEWER',  'Observador: solo puede ver evaluaciones, sin crear');
-
--- ================================================================
--- TABLA: users
--- ================================================================
-CREATE TABLE users (
-    id              UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
-    email           VARCHAR(255)    NOT NULL UNIQUE,
-    password_hash   VARCHAR(255)    NOT NULL,
-    nombre_completo VARCHAR(100)    NOT NULL,
-    activo          BOOLEAN         NOT NULL DEFAULT TRUE,
-    creado_en       TIMESTAMPTZ     NOT NULL DEFAULT NOW()
-);
-
--- ================================================================
--- TABLA: user_roles (many-to-many, en práctica un usuario tiene 1 rol)
--- ================================================================
-CREATE TABLE user_roles (
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    role_id UUID NOT NULL REFERENCES roles(id) ON DELETE RESTRICT,
-    PRIMARY KEY (user_id, role_id)
-);
-
--- ================================================================
--- ÍNDICES
--- ================================================================
-CREATE UNIQUE INDEX idx_users_email ON users (email);
-
--- ================================================================
--- USUARIO ADMIN INICIAL (hash de "Admin123!")
--- ================================================================
-INSERT INTO users (email, password_hash, nombre_completo)
-VALUES (
-    'admin@banco.com',
-    '$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewzEk2LBVJbS1Dm.',
-    'Administrador del Sistema'
-);
-
-INSERT INTO user_roles (user_id, role_id)
-SELECT u.id, r.id
-FROM users u, roles r
-WHERE u.email = 'admin@banco.com' AND r.nombre = 'ADMIN';
-```
-
----
+> **Keycloak** gestiona su propia base de datos internamente. Los roles (`ADMIN`, `ANALYST`, `VIEWER`) y los usuarios se crean vía Keycloak Admin Console o Admin REST API — no requieren DDL manual.
 
 ### `creditos_db` — ejecutar en el PostgreSQL de ms-credit-evaluation
 
@@ -174,7 +83,7 @@ CREATE TABLE credit_evaluations (
     deuda_mensual_total  NUMERIC(15, 2) NOT NULL CHECK (deuda_mensual_total >= 0),
     estado_final         estado_evaluacion NOT NULL DEFAULT 'PENDIENTE',
     fecha_evaluacion     TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
-    evaluado_por_id      UUID           -- referencia débil a auth_db.users, sin FK cruzada
+    evaluado_por_id      UUID           -- sub claim del JWT de Keycloak (ID del usuario en Keycloak)
 );
 
 -- ================================================================
@@ -247,29 +156,7 @@ CREATE UNIQUE INDEX idx_notifications_evaluacion_unique
 
 ## Descripción de Tablas
 
-### Tablas en `auth_db` (ms-auth)
-
-#### `users`
-| Columna | Tipo | Descripción |
-|---------|------|-------------|
-| `id` | UUID | PK generado automáticamente |
-| `email` | VARCHAR(255) | Email único, usado como username |
-| `password_hash` | VARCHAR(255) | Hash bcrypt (factor 12) |
-| `nombre_completo` | VARCHAR(100) | Nombre para mostrar |
-| `activo` | BOOLEAN | Permite desactivar usuarios sin borrarlos |
-| `creado_en` | TIMESTAMPTZ | Timestamp de creación con zona horaria |
-
-#### `roles`
-| Columna | Tipo | Descripción |
-|---------|------|-------------|
-| `id` | UUID | PK |
-| `nombre` | ENUM | ADMIN / ANALYST / VIEWER |
-| `descripcion` | TEXT | Descripción del rol para UI |
-
-#### `user_roles`
-Tabla de unión many-to-many entre `users` y `roles`. En la práctica del sistema actual, un usuario tiene exactamente un rol, pero el esquema permite expansión futura.
-
----
+> **Keycloak** gestiona sus propias tablas internamente (usuarios, credenciales, roles, sesiones). No se describen aquí porque no son accedidas directamente por ningún microservicio del sistema.
 
 ### Tablas en `creditos_db` (ms-credit-evaluation)
 
@@ -285,7 +172,7 @@ Tabla de unión many-to-many entre `users` y `roles`. En la práctica del sistem
 | `deuda_mensual_total` | NUMERIC(15,2) | Suma de mensualidades de deudas |
 | `estado_final` | ENUM | APROBADO / RECHAZADO / PENDIENTE |
 | `fecha_evaluacion` | TIMESTAMPTZ | Momento exacto de la evaluación |
-| `evaluado_por_id` | UUID (ref. débil) | ID del analista en `auth_db` — sin FK cruzada |
+| `evaluado_por_id` | UUID (ref. débil) | `sub` claim del JWT de Keycloak — identifica al analista sin FK cruzada |
 
 ---
 
@@ -316,23 +203,6 @@ quarkus.datasource.db-kind=postgresql
 quarkus.datasource.username=${DB_USERNAME:postgres}
 quarkus.datasource.password=${DB_PASSWORD:postgres}
 quarkus.datasource.jdbc.url=jdbc:postgresql://${DB_HOST:localhost}:5432/creditos_db
-
-# ── Hibernate ORM ────────────────────────────────────────────
-quarkus.hibernate-orm.database.generation=validate
-
-# ── Flyway (migraciones) ─────────────────────────────────────
-quarkus.flyway.migrate-at-start=true
-quarkus.flyway.locations=classpath:db/migration
-```
-
-### ms-auth — `auth_db`
-
-```properties
-# ── Datasource ───────────────────────────────────────────────
-quarkus.datasource.db-kind=postgresql
-quarkus.datasource.username=${AUTH_DB_USERNAME:postgres}
-quarkus.datasource.password=${AUTH_DB_PASSWORD:postgres}
-quarkus.datasource.jdbc.url=jdbc:postgresql://${AUTH_DB_HOST:localhost}:5433/auth_db
 
 # ── Hibernate ORM ────────────────────────────────────────────
 quarkus.hibernate-orm.database.generation=validate
