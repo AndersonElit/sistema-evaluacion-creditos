@@ -1,9 +1,9 @@
 package com.msrisk.restapi.resource;
 
-import com.msrisk.model.port.RiskPort;
 import com.msrisk.restapi.dto.DebtDto;
 import com.msrisk.restapi.dto.DeudasResponse;
 import com.msrisk.restapi.dto.ScoreResponse;
+import com.msrisk.usecases.GetRiskProfileUseCase;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
@@ -17,7 +17,7 @@ import java.time.Instant;
 public class RiskResource {
 
     @Inject
-    RiskPort riskPort;
+    GetRiskProfileUseCase getRiskProfileUseCase;
 
     @GET
     @Path("/score/{cedula}")
@@ -28,7 +28,7 @@ public class RiskResource {
                     .entity("{\"error\":\"Formato de cédula inválido\"}")
                     .build());
         }
-        return riskPort.getScore(cedula)
+        return getRiskProfileUseCase.getScore(cedula)
                 .map(score -> Response.ok(new ScoreResponse(cedula, score, Instant.now())).build());
     }
 
@@ -41,7 +41,7 @@ public class RiskResource {
                     .entity("{\"error\":\"Formato de cédula inválido\"}")
                     .build());
         }
-        return riskPort.getProfile(cedula)
+        return getRiskProfileUseCase.getProfile(cedula)
                 .map(profile -> {
                     var dtos = profile.debts().stream()
                             .map(d -> new DebtDto(d.id(), d.description(), d.monthlyPayment()))
