@@ -1,4 +1,4 @@
-package com.mscreditevaluation.postgres.repository;
+package com.mscreditevaluation.riskclient;
 
 import io.smallrye.mutiny.Uni;
 import jakarta.ws.rs.GET;

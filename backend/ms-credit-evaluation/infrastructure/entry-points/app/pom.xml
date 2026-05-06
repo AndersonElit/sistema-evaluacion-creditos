@@ -39,12 +39,9 @@
             <artifactId>quarkus-smallrye-health</artifactId>
         </dependency>
         <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-rest-client-jackson</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-smallrye-fault-tolerance</artifactId>
+            <groupId>com.mscreditevaluation.riskclient</groupId>
+            <artifactId>infrastructure-driven-adapters-risk-service-client</artifactId>
+            <version>${project.version}</version>
         </dependency>
         <!-- Test -->
         <dependency>

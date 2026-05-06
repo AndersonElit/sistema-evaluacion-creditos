@@ -1,4 +1,4 @@
-package com.mscreditevaluation.postgres.repository;
+package com.mscreditevaluation.riskclient;
 
 import com.mscreditevaluation.model.port.RiskServicePort;
 import com.mscreditevaluation.model.port.RiskServiceUnavailableException;

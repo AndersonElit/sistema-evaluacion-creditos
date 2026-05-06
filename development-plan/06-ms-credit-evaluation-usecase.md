@@ -12,22 +12,75 @@ que orquesta todo aplicando la regla de negocio.
 - Paso 05 completado (BD y repositorio funcionales)
 - Paso 09 (LocalStack) puede completarse antes de probar SQS, pero el servicio arranca sin él
 
-## 1. Dependencias adicionales — `infrastructure/entry-points/app/pom.xml`
+## 1. Nuevo módulo `risk-service-client` — `infrastructure/driven-adapters/risk-service-client/pom.xml`
 
-> `quarkus-smallrye-jwt` ya lo genera el scaffold en el módulo `app`. Solo agregar:
+Crear el archivo `infrastructure/driven-adapters/risk-service-client/pom.xml`:
 
 ```xml
-<!-- REST Client para ms-risk -->
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-rest-client-reactive-jackson</artifactId>
-</dependency>
-<!-- Fault Tolerance (Circuit Breaker, Timeout) -->
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-smallrye-fault-tolerance</artifactId>
-</dependency>
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.mscreditevaluation</groupId>
+        <artifactId>ms-credit-evaluation</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../../pom.xml</relativePath>
+    </parent>
+    <groupId>com.mscreditevaluation.riskclient</groupId>
+    <artifactId>infrastructure-driven-adapters-risk-service-client</artifactId>
+    <dependencies>
+        <!-- REST Client reactivo para ms-risk -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-rest-client-reactive-jackson</artifactId>
+        </dependency>
+        <!-- Fault Tolerance (Circuit Breaker, Timeout) -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-smallrye-fault-tolerance</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.mscreditevaluation.model</groupId>
+            <artifactId>domain-model</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>io.quarkus.platform</groupId>
+                <artifactId>quarkus-maven-plugin</artifactId>
+                <extensions>true</extensions>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>build</goal>
+                            <goal>generate-code</goal>
+                            <goal>generate-code-tests</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
 ```
+
+Agregar el módulo al root `pom.xml` (`infrastructure/driven-adapters/risk-service-client`):
+
+```xml
+<modules>
+    <module>domain/model</module>
+    <module>application/use-cases</module>
+    <module>infrastructure/driven-adapters/postgres</module>
+    <module>infrastructure/driven-adapters/risk-service-client</module>
+    <module>infrastructure/driven-adapters/sqs-producer</module>
+    <module>infrastructure/entry-points/rest-api</module>
+    <module>infrastructure/entry-points/app</module>
+</modules>
+```
+
+> Nota: eliminar `quarkus-rest-client-jackson` y `quarkus-smallrye-fault-tolerance` del `postgres/pom.xml` ya que ahora pertenecen a este módulo.
 
 ## 2. DTOs del caso de uso — `application/use-cases`
 
@@ -153,11 +206,13 @@ public class EvaluacionNotFoundException extends RuntimeException {
 }
 ```
 
-## 4. REST Client para ms-risk — `infrastructure/driven-adapters/postgres` (o nuevo módulo)
+## 4. REST Client para ms-risk — `infrastructure/driven-adapters/risk-service-client`
+
+Ubicación de los archivos: `infrastructure/driven-adapters/risk-service-client/src/main/java/com/mscreditevaluation/riskclient/`
 
 ### `RiskServiceClient.java` (interface MicroProfile Reactive)
 ```java
-package com.mscreditevaluation.postgres.repository;
+package com.mscreditevaluation.riskclient;
 
 import io.smallrye.mutiny.Uni;
 import jakarta.ws.rs.GET;
@@ -200,7 +255,7 @@ public interface RiskServiceClient {
 
 ### `RiskServiceAdapter.java` — Implementa `RiskServicePort` con llamadas paralelas via Mutiny
 ```java
-package com.mscreditevaluation.postgres.repository;
+package com.mscreditevaluation.riskclient;
 
 import com.mscreditevaluation.model.port.RiskServicePort;
 import io.smallrye.mutiny.Uni;
@@ -237,7 +292,7 @@ public class RiskServiceAdapter implements RiskServicePort {
 
 ### `RiskServiceUnavailableException.java`
 ```java
-package com.mscreditevaluation.postgres.repository;
+package com.mscreditevaluation.riskclient;
 
 public class RiskServiceUnavailableException extends RuntimeException {
     public RiskServiceUnavailableException(String message, Throwable cause) {

@@ -7,34 +7,23 @@
         <version>1.0.0-SNAPSHOT</version>
         <relativePath>../../../pom.xml</relativePath>
     </parent>
-    <groupId>com.mscreditevaluation.postgres</groupId>
-    <artifactId>infrastructure-driven-adapters-postgres</artifactId>
+    <groupId>com.mscreditevaluation.riskclient</groupId>
+    <artifactId>infrastructure-driven-adapters-risk-service-client</artifactId>
     <dependencies>
         <dependency>
             <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-hibernate-reactive-panache</artifactId>
+            <artifactId>quarkus-rest-client-reactive-jackson</artifactId>
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-reactive-pg-client</artifactId>
+            <artifactId>quarkus-smallrye-fault-tolerance</artifactId>
         </dependency>
         <dependency>
             <groupId>com.mscreditevaluation.model</groupId>
             <artifactId>domain-model</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-devservices-postgresql</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-test-vertx</artifactId>
-            <scope>test</scope>
-        </dependency>
     </dependencies>
-
     <build>
         <plugins>
             <plugin>
@@ -50,20 +39,6 @@
                         </goals>
                     </execution>
                 </executions>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <configuration>
-                    <systemPropertyVariables>
-                        <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
-                    </systemPropertyVariables>
-                    <includes>
-                        <include>**/*IT</include>
-                        <include>**/*IT.java</include>
-                        <include>**/*IT.class</include>
-                    </includes>
-                </configuration>
             </plugin>
         </plugins>
     </build>
