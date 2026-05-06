@@ -11,8 +11,8 @@
     <artifactId>infrastructure-driven-adapters-postgres</artifactId>
     <dependencies>
         <dependency>
-            <groupId>com.msnotifications.usecases</groupId>
-            <artifactId>application-use-cases</artifactId>
+            <groupId>com.msnotifications.model</groupId>
+            <artifactId>domain-model</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>

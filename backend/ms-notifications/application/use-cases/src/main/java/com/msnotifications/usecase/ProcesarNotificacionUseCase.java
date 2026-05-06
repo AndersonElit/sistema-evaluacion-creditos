@@ -2,7 +2,7 @@ package com.msnotifications.usecase;
 
 import com.msnotifications.model.entity.EvaluacionCompletadaEvent;
 import com.msnotifications.ses.adapter.EmailSenderService;
-import com.msnotifications.usecase.port.NotificationPort;
+import com.msnotifications.model.port.NotificationPort;
 import io.quarkus.hibernate.reactive.panache.common.WithTransaction;
 import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;

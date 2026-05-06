@@ -1,4 +1,4 @@
-package com.msnotifications.usecase.port;
+package com.msnotifications.model.port;
 
 import io.smallrye.mutiny.Uni;
 import java.util.UUID;

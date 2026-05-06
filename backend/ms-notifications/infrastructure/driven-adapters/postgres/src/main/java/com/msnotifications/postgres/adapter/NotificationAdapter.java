@@ -1,7 +1,7 @@
 package com.msnotifications.postgres.adapter;
 
 import com.msnotifications.postgres.entity.NotificationEntity;
-import com.msnotifications.usecase.port.NotificationPort;
+import com.msnotifications.model.port.NotificationPort;
 import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
 

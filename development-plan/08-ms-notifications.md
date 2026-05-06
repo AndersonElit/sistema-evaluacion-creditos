@@ -63,9 +63,9 @@ CREATE UNIQUE INDEX idx_notifications_evaluacion_unique
 El use case depende del port (interfaz), no de la entidad JPA.
 El adaptador implementa el port y encapsula todo detalle de Hibernate Reactive.
 
-### `NotificationPort.java` — `application/use-cases`
+### `NotificationPort.java` — `domain/model`
 ```java
-package com.msnotifications.usecase.port;
+package com.msnotifications.model.port;
 
 import io.smallrye.mutiny.Uni;
 import java.util.UUID;
@@ -130,7 +130,7 @@ public class NotificationEntity extends PanacheEntityBase {
 package com.msnotifications.postgres.adapter;
 
 import com.msnotifications.postgres.entity.NotificationEntity;
-import com.msnotifications.usecase.port.NotificationPort;
+import com.msnotifications.model.port.NotificationPort;
 import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
 
@@ -282,8 +282,8 @@ Contiene la lógica de negocio: verificar idempotencia, persistir la entidad y d
 package com.msnotifications.usecase;
 
 import com.msnotifications.model.entity.EvaluacionCompletadaEvent;
+import com.msnotifications.model.port.NotificationPort;
 import com.msnotifications.ses.adapter.EmailSenderService;
-import com.msnotifications.usecase.port.NotificationPort;
 import io.quarkus.hibernate.reactive.panache.common.ReactiveTransactional;
 import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -622,8 +622,8 @@ Ubicación: `application/use-cases/src/test/java/com/msnotifications/usecase/`
 package com.msnotifications.usecase;
 
 import com.msnotifications.model.entity.EvaluacionCompletadaEvent;
+import com.msnotifications.model.port.NotificationPort;
 import com.msnotifications.ses.adapter.EmailSenderService;
-import com.msnotifications.usecase.port.NotificationPort;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.vertx.RunOnVertxContext;

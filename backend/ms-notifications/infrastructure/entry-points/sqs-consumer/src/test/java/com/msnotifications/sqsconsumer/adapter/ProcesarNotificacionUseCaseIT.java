@@ -3,7 +3,7 @@ package com.msnotifications.sqsconsumer.adapter;
 import com.msnotifications.model.entity.EvaluacionCompletadaEvent;
 import com.msnotifications.ses.adapter.EmailSenderService;
 import com.msnotifications.usecase.ProcesarNotificacionUseCase;
-import com.msnotifications.usecase.port.NotificationPort;
+import com.msnotifications.model.port.NotificationPort;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.TestReactiveTransaction;
 import io.quarkus.test.junit.QuarkusTest;
