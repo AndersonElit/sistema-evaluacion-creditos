@@ -125,53 +125,27 @@ public class CreditEvaluationEntity extends PanacheEntityBase {
 }
 ```
 
-## 4. Repositorio Reactivo — `infrastructure/driven-adapters/postgres`
+## 4. Mapper y Repositorio Reactivo — `infrastructure/driven-adapters/postgres`
 
-### `CreditEvaluationRepositoryAdapter.java`
+### `mapper/CreditEvaluationMapper.java`
+
+Ubicación: `infrastructure/driven-adapters/postgres/src/main/java/com/mscreditevaluation/postgres/mapper/`
+
 ```java
-package com.mscreditevaluation.postgres.repository;
+package com.mscreditevaluation.postgres.mapper;
 
 import com.mscreditevaluation.model.entity.EstadoEvaluacion;
 import com.mscreditevaluation.model.entity.EvaluacionCredito;
-import com.mscreditevaluation.model.port.EvaluacionCreditoRepository;
 import com.mscreditevaluation.model.valueobject.Cedula;
 import com.mscreditevaluation.model.valueobject.Dinero;
 import com.mscreditevaluation.model.valueobject.ScoreRiesgo;
 import com.mscreditevaluation.postgres.entity.CreditEvaluationEntity;
-import io.quarkus.hibernate.reactive.panache.common.ReactiveTransactional;
-import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
 
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
-
 @ApplicationScoped
-public class CreditEvaluationRepositoryAdapter implements EvaluacionCreditoRepository {
+public class CreditEvaluationMapper {
 
-    @Override
-    @ReactiveTransactional
-    public Uni<EvaluacionCredito> guardar(EvaluacionCredito evaluacion) {
-        CreditEvaluationEntity entity = toEntity(evaluacion);
-        return entity.<CreditEvaluationEntity>persistAndFlush()
-                .map(e -> evaluacion);
-    }
-
-    @Override
-    public Uni<Optional<EvaluacionCredito>> buscarPorId(UUID id) {
-        return CreditEvaluationEntity.<CreditEvaluationEntity>findById(id)
-                .map(e -> Optional.ofNullable(e).map(this::toDomain));
-    }
-
-    @Override
-    public Uni<List<EvaluacionCredito>> listarTodas(int page, int size) {
-        return CreditEvaluationEntity.<CreditEvaluationEntity>findAll()
-                .page(page, size)
-                .list()
-                .map(list -> list.stream().map(this::toDomain).toList());
-    }
-
-    private CreditEvaluationEntity toEntity(EvaluacionCredito d) {
+    public CreditEvaluationEntity toEntity(EvaluacionCredito d) {
         var e = new CreditEvaluationEntity();
         e.id = d.getId();
         e.cedula = d.getCedula().valor();
@@ -187,7 +161,7 @@ public class CreditEvaluationRepositoryAdapter implements EvaluacionCreditoRepos
         return e;
     }
 
-    private EvaluacionCredito toDomain(CreditEvaluationEntity e) {
+    public EvaluacionCredito toDomain(CreditEvaluationEntity e) {
         return EvaluacionCredito.builder()
                 .cedula(new Cedula(e.cedula))
                 .montoSolicitado(Dinero.usd(e.montoSolicitado))
@@ -198,6 +172,55 @@ public class CreditEvaluationRepositoryAdapter implements EvaluacionCreditoRepos
                 .estadoFinal(EstadoEvaluacion.valueOf(e.estadoFinal.name()))
                 .evaluadoPorId(e.evaluadoPorId)
                 .build();
+    }
+}
+```
+
+### `repository/CreditEvaluationRepositoryAdapter.java`
+```java
+package com.mscreditevaluation.postgres.repository;
+
+import com.mscreditevaluation.model.entity.EvaluacionCredito;
+import com.mscreditevaluation.model.port.EvaluacionCreditoRepository;
+import com.mscreditevaluation.postgres.entity.CreditEvaluationEntity;
+import com.mscreditevaluation.postgres.mapper.CreditEvaluationMapper;
+import io.quarkus.hibernate.reactive.panache.common.WithTransaction;
+import io.smallrye.mutiny.Uni;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+@ApplicationScoped
+public class CreditEvaluationRepositoryAdapter implements EvaluacionCreditoRepository {
+
+    @Inject
+    CreditEvaluationMapper mapper;
+
+    @Override
+    @WithTransaction
+    public Uni<EvaluacionCredito> guardar(EvaluacionCredito evaluacion) {
+        CreditEvaluationEntity entity = mapper.toEntity(evaluacion);
+        return entity.<CreditEvaluationEntity>persistAndFlush()
+                .map(e -> evaluacion);
+    }
+
+    @Override
+    @WithTransaction
+    public Uni<Optional<EvaluacionCredito>> buscarPorId(UUID id) {
+        return CreditEvaluationEntity.<CreditEvaluationEntity>findById(id)
+                .map(e -> Optional.ofNullable(e).map(mapper::toDomain));
+    }
+
+    @Override
+    @WithTransaction
+    public Uni<List<EvaluacionCredito>> listarTodas(int page, int size) {
+        return CreditEvaluationEntity.<CreditEvaluationEntity>findAll()
+                .page(page, size)
+                .list()
+                .map(list -> list.stream().map(mapper::toDomain).toList());
     }
 }
 ```
