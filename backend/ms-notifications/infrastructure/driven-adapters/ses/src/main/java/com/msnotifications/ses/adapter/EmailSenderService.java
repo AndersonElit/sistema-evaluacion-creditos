@@ -1,6 +1,7 @@
 package com.msnotifications.ses.adapter;
 
 import io.smallrye.mutiny.Uni;
+import io.vertx.core.Vertx;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -20,6 +21,9 @@ public class EmailSenderService {
     @Inject
     SesAsyncClient sesClient;
 
+    @Inject
+    Vertx vertx;
+
     @ConfigProperty(name = "aws.ses.from.email", defaultValue = "noreply@banco.com")
     String fromEmail;
 
@@ -29,6 +33,7 @@ public class EmailSenderService {
                 ? "Su solicitud de crédito fue APROBADA ✓"
                 : "Su solicitud de crédito fue RECHAZADA";
         String cuerpoHtml = generarPlantilla(estadoFinal, monto, fecha);
+        var ctx = vertx.getOrCreateContext();
 
         return Uni.createFrom().completionStage(() ->
                 sesClient.sendEmail(SendEmailRequest.builder()
@@ -39,6 +44,7 @@ public class EmailSenderService {
                         )
                         .source(fromEmail)
                         .build()))
+                .emitOn(cmd -> ctx.runOnContext(v -> cmd.run()))
                 .invoke(r -> log.info("Email enviado a {}: {}", destinatario, estadoFinal))
                 .replaceWithVoid()
                 .onFailure().invoke(e -> log.error("Error enviando email a {}: {}",
