@@ -32,7 +32,7 @@ Crear el archivo `infrastructure/driven-adapters/risk-service-client/pom.xml`:
         <!-- REST Client reactivo para ms-risk -->
         <dependency>
             <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-rest-client-reactive-jackson</artifactId>
+            <artifactId>quarkus-rest-client-jackson</artifactId>
         </dependency>
         <!-- Fault Tolerance (Circuit Breaker, Timeout) -->
         <dependency>
