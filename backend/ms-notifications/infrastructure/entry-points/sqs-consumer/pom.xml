@@ -11,18 +11,14 @@
     <artifactId>infrastructure-entry-points-sqs-consumer</artifactId>
     <dependencies>
         <dependency>
-            <groupId>com.msnotifications.model</groupId>
-            <artifactId>domain-model</artifactId>
+            <groupId>com.msnotifications.usecases</groupId>
+            <artifactId>application-use-cases</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.msnotifications.postgres</groupId>
             <artifactId>infrastructure-driven-adapters-postgres</artifactId>
             <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-hibernate-reactive-panache</artifactId>
         </dependency>
         <dependency>
             <groupId>io.quarkiverse.amazonservices</groupId>

@@ -11,8 +11,22 @@
     <artifactId>application-use-cases</artifactId>
     <dependencies>
         <dependency>
-            <groupId>io.smallrye.reactive</groupId>
-            <artifactId>mutiny</artifactId>
+            <groupId>com.msnotifications.model</groupId>
+            <artifactId>domain-model</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.msnotifications.ses</groupId>
+            <artifactId>infrastructure-driven-adapters-ses</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-arc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-hibernate-reactive-panache</artifactId>
         </dependency>
     </dependencies>
 </project>

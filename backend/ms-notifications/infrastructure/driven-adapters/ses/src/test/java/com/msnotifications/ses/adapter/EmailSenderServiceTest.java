@@ -1,4 +1,4 @@
-package com.msnotifications.postgres.repository;
+package com.msnotifications.ses.adapter;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -36,10 +36,8 @@ class EmailSenderServiceTest {
         var captor = ArgumentCaptor.forClass(SendEmailRequest.class);
         verify(sesClient).sendEmail(captor.capture());
 
-        var asunto = captor.getValue().message().subject().data();
-        assertThat(asunto).containsIgnoringCase("APROBADA");
-        assertThat(captor.getValue().destination().toAddresses())
-                .containsExactly("dest@email.com");
+        assertThat(captor.getValue().message().subject().data()).containsIgnoringCase("APROBADA");
+        assertThat(captor.getValue().destination().toAddresses()).containsExactly("dest@email.com");
     }
 
     @Test
@@ -54,8 +52,7 @@ class EmailSenderServiceTest {
 
         var captor = ArgumentCaptor.forClass(SendEmailRequest.class);
         verify(sesClient).sendEmail(captor.capture());
-        assertThat(captor.getValue().message().subject().data())
-                .containsIgnoringCase("RECHAZADA");
+        assertThat(captor.getValue().message().subject().data()).containsIgnoringCase("RECHAZADA");
     }
 
     @Test
@@ -94,7 +91,6 @@ class EmailSenderServiceTest {
 
         var captor = ArgumentCaptor.forClass(SendEmailRequest.class);
         verify(sesClient).sendEmail(captor.capture());
-        var html = captor.getValue().message().body().html().data();
-        assertThat(html).contains("7,500.00");
+        assertThat(captor.getValue().message().body().html().data()).contains("7,500.00");
     }
 }

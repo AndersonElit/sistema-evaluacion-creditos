@@ -11,8 +11,8 @@
     <artifactId>infrastructure-driven-adapters-postgres</artifactId>
     <dependencies>
         <dependency>
-            <groupId>com.msnotifications.model</groupId>
-            <artifactId>domain-model</artifactId>
+            <groupId>com.msnotifications.usecases</groupId>
+            <artifactId>application-use-cases</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
@@ -22,14 +22,6 @@
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-reactive-pg-client</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkiverse.amazonservices</groupId>
-            <artifactId>quarkus-amazon-ses</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>software.amazon.awssdk</groupId>
-            <artifactId>url-connection-client</artifactId>
         </dependency>
     </dependencies>
 </project>

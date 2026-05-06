@@ -1,7 +1,6 @@
 package com.msnotifications.postgres.entity;
 
 import io.quarkus.hibernate.reactive.panache.PanacheEntityBase;
-import io.smallrye.mutiny.Uni;
 import jakarta.persistence.*;
 import java.time.Instant;
 import java.util.UUID;
@@ -41,9 +40,4 @@ public class NotificationEntity extends PanacheEntityBase {
 
     public enum TipoNotif { APROBADO, RECHAZADO }
     public enum EstadoNotif { PENDIENTE, ENVIADO, FALLIDO }
-
-    public static Uni<Boolean> existsByEvaluacionIdAndEstado(UUID evalId, EstadoNotif estado) {
-        return count("evaluacionId = ?1 AND estado = ?2", evalId, estado)
-                .map(n -> n > 0);
-    }
 }

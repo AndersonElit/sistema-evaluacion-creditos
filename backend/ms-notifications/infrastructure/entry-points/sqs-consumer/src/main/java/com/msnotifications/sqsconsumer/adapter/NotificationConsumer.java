@@ -2,11 +2,8 @@ package com.msnotifications.sqsconsumer.adapter;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.msnotifications.model.entity.EvaluacionCompletadaEvent;
-import com.msnotifications.postgres.entity.NotificationEntity;
-import com.msnotifications.postgres.repository.EmailSenderService;
-import io.quarkus.hibernate.reactive.panache.common.WithTransaction;
+import com.msnotifications.usecase.ProcesarNotificacionUseCase;
 import io.quarkus.scheduler.Scheduled;
-import io.quarkus.vertx.VertxContextSupport;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import io.vertx.core.Vertx;
@@ -18,16 +15,13 @@ import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.*;
 
-import java.time.Instant;
-import java.util.UUID;
-
 @ApplicationScoped
 public class NotificationConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(NotificationConsumer.class);
 
     @Inject SqsAsyncClient sqsClient;
-    @Inject EmailSenderService emailSender;
+    @Inject ProcesarNotificacionUseCase useCase;
     @Inject ObjectMapper objectMapper;
     @Inject Vertx vertx;
 
@@ -35,18 +29,7 @@ public class NotificationConsumer {
     String queueUrl;
 
     @Scheduled(every = "20s", delayed = "30s")
-    public void procesarMensajes() {
-        VertxContextSupport.subscribeWith(
-            this::pollSqs,
-            ignored -> {},
-            e -> log.error("Error procesando mensajes SQS: {}", e.getMessage(), e)
-        );
-    }
-
-    private Uni<Void> pollSqs() {
-        // Capturar el contexto duplicado creado por VertxContextSupport.subscribeWith.
-        // El CompletionStage de AWS SDK completa en su propio thread pool; emitOn
-        // devuelve la ejecución a este contexto Vert.x antes de llamar a procesarYEliminar.
+    public Uni<Void> procesarMensajes() {
         var ctx = vertx.getOrCreateContext();
 
         return Uni.createFrom().completionStage(() ->
@@ -55,6 +38,7 @@ public class NotificationConsumer {
                         .maxNumberOfMessages(10)
                         .waitTimeSeconds(5)
                         .build()))
+                // Vuelve al contexto Vert.x tras el thread pool del AWS SDK
                 .emitOn(cmd -> ctx.runOnContext(v -> cmd.run()))
                 .chain(response -> {
                     var messages = response.messages();
@@ -69,51 +53,22 @@ public class NotificationConsumer {
                 });
     }
 
-    @WithTransaction
     Uni<Void> procesarYEliminar(Message msg) {
-        return procesarEvento(msg)
+        return deserializar(msg)
+                .chain(evento -> useCase.procesar(evento, msg.messageId()))
                 .chain(() -> eliminar(msg.receiptHandle()))
                 .onFailure().invoke(e ->
                         log.error("Error procesando mensaje {}: {}", msg.messageId(), e.getMessage()))
                 .onFailure().recoverWithNull();
     }
 
-    private Uni<Void> procesarEvento(Message msg) {
-        EvaluacionCompletadaEvent evento;
+    private Uni<EvaluacionCompletadaEvent> deserializar(Message msg) {
         try {
-            evento = objectMapper.readValue(msg.body(), EvaluacionCompletadaEvent.class);
+            return Uni.createFrom().item(
+                    objectMapper.readValue(msg.body(), EvaluacionCompletadaEvent.class));
         } catch (Exception e) {
             return Uni.createFrom().failure(e);
         }
-
-        UUID evalId = UUID.fromString(evento.evaluacionId());
-
-        return NotificationEntity.existsByEvaluacionIdAndEstado(
-                evalId, NotificationEntity.EstadoNotif.ENVIADO)
-                .chain(yaEnviado -> {
-                    if (yaEnviado) {
-                        log.info("Notificación ya enviada para evaluacion {} — ignorando", evalId);
-                        return Uni.createFrom().voidItem();
-                    }
-
-                    NotificationEntity notif = new NotificationEntity();
-                    notif.evaluacionId = evalId;
-                    notif.destinatarioEmail = evento.destinatarioEmail();
-                    notif.tipoNotificacion = NotificationEntity.TipoNotif.valueOf(evento.estadoFinal());
-                    notif.mensajeSqsId = msg.messageId();
-
-                    return notif.<NotificationEntity>persist()
-                            .chain(n -> emailSender.enviar(
-                                    evento.destinatarioEmail(),
-                                    evento.estadoFinal(),
-                                    evento.montoSolicitado(),
-                                    evento.fechaEvaluacion())
-                                    .invoke(() -> {
-                                        n.estado = NotificationEntity.EstadoNotif.ENVIADO;
-                                        n.enviadoEn = Instant.now();
-                                        n.intentos++;
-                                    }));
-                });
     }
 
     private Uni<Void> eliminar(String receiptHandle) {

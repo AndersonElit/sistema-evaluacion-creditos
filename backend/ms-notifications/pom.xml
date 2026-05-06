@@ -40,6 +40,7 @@
     <modules>
         <module>domain/model</module>
         <module>application/use-cases</module>
+        <module>infrastructure/driven-adapters/ses</module>
         <module>infrastructure/driven-adapters/postgres</module>
         <module>infrastructure/entry-points/rest-api</module>
         <module>infrastructure/entry-points/app</module>

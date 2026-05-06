@@ -1,4 +1,4 @@
-package com.msnotifications.postgres.repository;
+package com.msnotifications.ses.adapter;
 
 import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
