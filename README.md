@@ -278,20 +278,25 @@ mvn quarkus:dev
 docker compose -f docker-compose.infra.yml up -d
 
 # 2. Arrancar cada microservicio en su propia terminal
-cd ms-risk/infrastructure/entry-points/app && mvn quarkus:dev
-cd ms-credit-evaluation/infrastructure/entry-points/app && mvn quarkus:dev
-cd ms-notifications/infrastructure/entry-points/app && mvn quarkus:dev
+cd backend/ms-risk/infrastructure/entry-points/app && mvn quarkus:dev
+cd backend/ms-credit-evaluation/infrastructure/entry-points/app && mvn quarkus:dev
+cd backend/ms-notifications/infrastructure/entry-points/app && mvn quarkus:dev
 
-# 3. Swagger UI disponible en modo dev
+# 3. Frontend (Vite dev server con HMR)
+cd frontend && npm run dev
+
+# Swagger UI disponible en modo dev
 # ms-credit-evaluation: http://localhost:8080/swagger-ui
 # ms-risk:              http://localhost:8081/swagger-ui
 ```
 
 ### Stack completo con Docker Compose
 
+El `docker-compose.yml` en la raíz construye y levanta los **5 servicios** (3 microservicios Java + frontend + infraestructura) con dependencias y healthchecks coordinados:
+
 ```bash
 # Build de todas las imágenes y levantar
-docker compose build
+docker compose build           # primera vez: ~5–10 min
 docker compose up -d
 
 # Verificar estado
@@ -306,6 +311,22 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000  # Frontend: 200
 docker compose down        # conserva volúmenes
 docker compose down -v     # reset completo
 ```
+
+**Artefactos Docker:**
+
+| Componente | Dockerfile | Imagen base build / runtime |
+|-----------|-----------|----------------------------|
+| `ms-risk`, `ms-credit-evaluation`, `ms-notifications` | `backend/<servicio>/Dockerfile` | `maven:3.9-eclipse-temurin-21` → `eclipse-temurin:21-jre` (+ `curl` para healthcheck) |
+| `frontend` | `frontend/Dockerfile` + `frontend/nginx.conf` | `node:20-alpine` → `nginx:alpine` (sirve `dist/` en `:3000`, proxy `/api/` → `ms-credit-evaluation:8080`) |
+
+**Configuración Keycloak dentro de Docker (importante):**
+
+El JWT que emite Keycloak lleva como `iss` el host con el que el browser obtuvo el token (`http://localhost:9000`). El backend, en cambio, debe descargar las llaves vía la red interna de Docker. Por eso `ms-credit-evaluation` distingue dos URLs:
+
+| Variable | Propósito | Modo dev | En Docker |
+|----------|-----------|----------|-----------|
+| `KEYCLOAK_ISSUER_URL` | Validar el claim `iss` del JWT | `http://localhost:9000` | `http://localhost:9000` |
+| `KEYCLOAK_INTERNAL_URL` | Descargar las llaves públicas (JWKS) | `http://localhost:9000` | `http://keycloak:8080` |
 
 **Puertos del sistema:**
 
@@ -369,17 +390,17 @@ Implementación paso a paso del sistema completo. Cada paso tiene prerrequisitos
 
 | # | Paso | Descripción |
 |---|------|-------------|
-| 01 | [Infraestructura Local](./development-plan/01-infraestructura-local.md) | `docker-compose.infra.yml`: PostgreSQL ×3, Keycloak y LocalStack |
-| 02 | [Keycloak Realm](./development-plan/02-keycloak-realm.md) | Configuración del realm `banco`, clientes OIDC, roles y usuarios de prueba |
-| 03 | [ms-risk](./development-plan/03-ms-risk.md) | Mock REST: `GET /v1/risk/score/{cedula}` y `GET /v1/risk/debts/{cedula}` |
-| 04 | [ms-credit-evaluation — Dominio](./development-plan/04-ms-credit-evaluation-dominio.md) | Value Objects (`Cedula`, `Dinero`), Agregado raíz, Puertos + tests JUnit puro |
-| 05 | [ms-credit-evaluation — BD](./development-plan/05-ms-credit-evaluation-bd.md) | Migraciones Flyway, entidad Panache, repositorio reactivo |
+| 01 | [Infraestructura Local](./development-plan/01-infraestructura-local.md) ✓ | `docker-compose.infra.yml`: PostgreSQL ×3, Keycloak y LocalStack |
+| 02 | [Keycloak Realm](./development-plan/02-keycloak-realm.md) ✓ | Configuración del realm `banco`, clientes OIDC, roles y usuarios de prueba |
+| 03 | [ms-risk](./development-plan/03-ms-risk.md) ✓ | Mock REST: `GET /v1/risk/score/{cedula}` y `GET /v1/risk/debts/{cedula}` |
+| 04 | [ms-credit-evaluation — Dominio](./development-plan/04-ms-credit-evaluation-dominio.md) ✓ | Value Objects (`Cedula`, `Dinero`), Agregado raíz, Puertos + tests JUnit puro |
+| 05 | [ms-credit-evaluation — BD](./development-plan/05-ms-credit-evaluation-bd.md) ✓ | Migraciones Flyway, entidad Panache, repositorio reactivo |
 | 06 | [ms-credit-evaluation — Caso de Uso](./development-plan/06-ms-credit-evaluation-usecase.md) | `EvaluarCreditoUseCase` con llamadas paralelas Mutiny + tests Mockito |
 | 07 | [ms-credit-evaluation — API REST](./development-plan/07-ms-credit-evaluation-api.md) | `CreditEvaluationResource`, DTOs con `@Valid`, manejo de errores, tests REST-Assured |
-| 08 | [ms-notifications](./development-plan/08-ms-notifications.md) | SQS consumer, AWS SES, idempotencia, DLQ |
+| 08 | [ms-notifications](./development-plan/08-ms-notifications.md) ✓ | SQS consumer, AWS SES, idempotencia, DLQ |
 | 09 | [LocalStack SQS + SES](./development-plan/09-localstack-sqs-ses.md) | Colas (`credit-evaluation-notifications`, DLQ) y verificación de emails |
-| 10 | [Frontend React](./development-plan/10-frontend-react.md) | Keycloak JS Adapter, formulario de evaluación, tabla de resultados |
-| 11 | [Docker Compose Completo](./development-plan/11-docker-compose-completo.md) | Dockerfiles para los 3 servicios y frontend; `docker-compose.yml` unificado |
+| 10 | [Frontend React](./development-plan/10-frontend-react.md) ✓ | Keycloak JS Adapter, formulario de evaluación, tabla de resultados |
+| 11 | [Docker Compose Completo](./development-plan/11-docker-compose-completo.md) ✓ | Dockerfiles multistage para los 3 microservicios y el frontend; `docker-compose.yml` unificado en la raíz |
 | 12 | [CI/CD Security Pipeline](./development-plan/12-cicd-security-pipeline.md) | GitHub Actions: GitLeaks, SonarQube, OWASP, Trivy + branch protection rules |
 | 13 | [Verificación End-to-End](./development-plan/13-verificacion-end-to-end.md) | Happy path, controles de acceso, inyección SQL, resiliencia, idempotencia |
 

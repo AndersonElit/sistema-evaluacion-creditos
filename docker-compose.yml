@@ -1,0 +1,203 @@
+version: "3.9"
+
+networks:
+  creditos-net:
+    driver: bridge
+
+services:
+
+  # ──────────────────────────────────────────────
+  # INFRAESTRUCTURA
+  # ──────────────────────────────────────────────
+
+  postgres-credits:
+    image: postgres:16
+    container_name: postgres-credits
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: creditos_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    networks: [creditos-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d creditos_db"]
+      interval: 5s
+      retries: 5
+
+  postgres-notifications:
+    image: postgres:16
+    container_name: postgres-notifications
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_DB: notifications_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    networks: [creditos-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d notifications_db"]
+      interval: 5s
+      retries: 5
+
+  postgres-keycloak:
+    image: postgres:16
+    container_name: postgres-keycloak
+    ports:
+      - "5435:5432"
+    environment:
+      POSTGRES_DB: keycloak_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    networks: [creditos-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d keycloak_db"]
+      interval: 5s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: keycloak
+    command: start-dev --import-realm
+    ports:
+      - "9000:8080"
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres-keycloak:5432/keycloak_db
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: postgres
+    volumes:
+      - ./scripts/keycloak-realm-banco.json:/opt/keycloak/data/import/realm-banco.json
+    depends_on:
+      postgres-keycloak:
+        condition: service_healthy
+    networks: [creditos-net]
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /realms/master HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -c 12 <&3 | grep -q '200'"]
+      interval: 10s
+      retries: 10
+      start_period: 30s
+
+  localstack:
+    image: localstack/localstack:3.0
+    container_name: localstack
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: sqs,ses
+      DEFAULT_REGION: us-east-1
+      LOCALSTACK_AUTH_TOKEN: ""
+    volumes:
+      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh
+    networks: [creditos-net]
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal sqs list-queues || exit 1"]
+      interval: 5s
+      retries: 10
+      start_period: 15s
+
+  # ──────────────────────────────────────────────
+  # MICROSERVICIOS
+  # ──────────────────────────────────────────────
+
+  ms-risk:
+    build:
+      context: ./backend/ms-risk
+      dockerfile: Dockerfile
+    container_name: ms-risk
+    ports:
+      - "8081:8081"
+    networks: [creditos-net]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/q/health || exit 1"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+
+  ms-credit-evaluation:
+    build:
+      context: ./backend/ms-credit-evaluation
+      dockerfile: Dockerfile
+    container_name: ms-credit-evaluation
+    ports:
+      - "8080:8080"
+    environment:
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_REACTIVE_URL: postgresql://postgres-credits:5432/creditos_db
+      # Keycloak: el issuer debe coincidir con el host con el que el browser obtuvo el token (localhost:9000)
+      # mientras que el publickey lo descarga el backend usando el nombre interno del contenedor
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_ISSUER_URL: http://localhost:9000
+      KEYCLOAK_REALM: banco
+      RISK_SERVICE_URL: http://ms-risk:8081
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/credit-evaluation-notifications
+      SQS_ENDPOINT_URL: http://localstack:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    depends_on:
+      postgres-credits:
+        condition: service_healthy
+      ms-risk:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    networks: [creditos-net]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/q/health || exit 1"]
+      interval: 10s
+      retries: 5
+      start_period: 40s
+
+  ms-notifications:
+    build:
+      context: ./backend/ms-notifications
+      dockerfile: Dockerfile
+    container_name: ms-notifications
+    ports:
+      - "8083:8083"
+    environment:
+      NOTIF_DB_HOST: postgres-notifications
+      NOTIF_DB_PORT: "5432"
+      NOTIF_DB_NAME: notifications_db
+      NOTIF_DB_USERNAME: postgres
+      NOTIF_DB_PASSWORD: postgres
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/credit-evaluation-notifications
+      SQS_ENDPOINT_URL: http://localstack:4566
+      SES_ENDPOINT_URL: http://localstack:4566
+      SES_FROM_EMAIL: noreply@banco.com
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    depends_on:
+      postgres-notifications:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    networks: [creditos-net]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/q/health || exit 1"]
+      interval: 10s
+      retries: 5
+      start_period: 40s
+
+  # ──────────────────────────────────────────────
+  # FRONTEND
+  # ──────────────────────────────────────────────
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      ms-credit-evaluation:
+        condition: service_healthy
+    networks: [creditos-net]
