@@ -123,12 +123,8 @@ services:
     container_name: ms-credit-evaluation
     ports:
       - "8080:8080"
-    environment:
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      AWS_REGION: us-east-1
-      AWS_SSM_ENDPOINT: http://localstack:4566
-      SSM_PREFIX: /banco/ms-credit-evaluation
+    env_file:
+      - ./backend/ms-credit-evaluation/.env
     depends_on:
       postgres-credits:
         condition: service_healthy
@@ -152,12 +148,8 @@ services:
     container_name: ms-notifications
     ports:
       - "8083:8083"
-    environment:
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      AWS_REGION: us-east-1
-      AWS_SSM_ENDPOINT: http://localstack:4566
-      SSM_PREFIX: /banco/ms-notifications
+    env_file:
+      - ./backend/ms-notifications/.env
     depends_on:
       postgres-notifications:
         condition: service_healthy
