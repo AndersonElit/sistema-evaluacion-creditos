@@ -420,3 +420,405 @@ Implementación paso a paso del sistema completo. Cada paso tiene prerrequisitos
 | 08 | [Notificaciones SQS](./docs/08-notifications-sqs.md) | Flujo de notificaciones por email via AWS SQS/SES |
 | 09 | [ADR — Decisiones de Arquitectura](./docs/09-adr.md) | REST vs gRPC, Keycloak, ms-notifications y otras decisiones clave |
 | 10 | [SDD — Security-Driven Development](./docs/10-sdd.md) | Threat Model STRIDE, controles, security requirements, testing y pipeline |
+
+---
+
+## Guía de Ejecución Local desde Cero
+
+Esta sección está dirigida a cualquier persona que clone el repositorio y quiera levantar el sistema completo en su máquina. Hay dos opciones según el caso de uso.
+
+---
+
+### Prerrequisitos
+
+| Herramienta | Versión mínima | Para qué se usa |
+|-------------|----------------|-----------------|
+| [Docker Engine](https://docs.docker.com/engine/install/) | 24+ | Contenedores de infraestructura y microservicios |
+| [Docker Compose](https://docs.docker.com/compose/install/) | v2 (plugin) | Orquestación del stack completo |
+| [JDK 21](https://adoptium.net/) | 21+ | Solo Opción B — compilar y ejecutar microservicios locales |
+| [Maven](https://maven.apache.org/download.cgi) | 3.9+ | Solo Opción B — build de microservicios |
+| [Node.js](https://nodejs.org/) | 20+ | Solo Opción B — servidor de desarrollo del frontend |
+
+Verificar instalaciones:
+
+```bash
+docker --version           # Docker version 24.x.x
+docker compose version     # Docker Compose version v2.x.x
+java --version             # openjdk 21.x.x  (solo Opción B)
+mvn --version              # Apache Maven 3.9.x  (solo Opción B)
+node --version             # v20.x.x  (solo Opción B)
+```
+
+---
+
+### Opción A — Stack completo con Docker Compose
+
+Todo corre dentro de Docker: infraestructura, tres microservicios y frontend. Es la forma más rápida de ver el sistema funcionando sin instalar Java ni Node.js.
+
+> **Tiempo estimado:** 10–15 min en la primera ejecución (descarga de imágenes base y compilación Maven dentro de los contenedores).
+
+#### Paso 1 — Clonar el repositorio
+
+```bash
+git clone <URL-del-repositorio> sistema-evaluacion-creditos
+cd sistema-evaluacion-creditos
+```
+
+#### Paso 2 — Crear los archivos `.env`
+
+Los archivos `.env` no se incluyen en el repositorio (están en `.gitignore`). El `docker-compose.yml` los requiere para `ms-credit-evaluation` y `ms-notifications`. El resto de la configuración (base de datos, JWT, URLs internas) es inyectada automáticamente por LocalStack vía AWS SSM Parameter Store al arrancar.
+
+```bash
+cp backend/ms-credit-evaluation/.env.example backend/ms-credit-evaluation/.env
+cp backend/ms-notifications/.env.example     backend/ms-notifications/.env
+```
+
+Editar `backend/ms-credit-evaluation/.env` — reemplazar únicamente las líneas marcadas:
+
+```dotenv
+SERVER_PORT=8080
+
+# Dejar vacíos — la configuración viene de SSM (LocalStack la carga al iniciar)
+DB_REACTIVE_URL=
+DB_USERNAME=
+DB_PASSWORD=
+KEYCLOAK_URL=
+KEYCLOAK_REALM=
+KEYCLOAK_CLIENT_ID=
+
+# AWS LocalStack — valores fijos para desarrollo local
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+AWS_SSM_ENDPOINT=http://localstack:4566
+SSM_PREFIX=/banco/ms-credit-evaluation
+```
+
+Editar `backend/ms-notifications/.env` con los mismos valores, cambiando solo `SSM_PREFIX`:
+
+```dotenv
+SERVER_PORT=8080
+
+DB_REACTIVE_URL=
+DB_USERNAME=
+DB_PASSWORD=
+KEYCLOAK_URL=
+KEYCLOAK_REALM=
+KEYCLOAK_CLIENT_ID=
+
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+AWS_SSM_ENDPOINT=http://localstack:4566
+SSM_PREFIX=/banco/ms-notifications
+```
+
+> `ms-risk` no requiere `.env` — su configuración está hardcodeada en `application.properties` ya que es un servicio mock sin credenciales externas.
+
+#### Paso 3 — Construir y levantar el stack
+
+```bash
+# Primera vez: construye las imágenes Docker de los 3 microservicios y el frontend
+docker compose build
+
+# Levanta todo en segundo plano
+docker compose up -d
+```
+
+Docker Compose respeta el orden de arranque mediante `depends_on` con healthchecks:
+
+```
+PostgreSQL ×3 → LocalStack → Keycloak → ms-risk → ms-credit-evaluation → ms-notifications → frontend
+```
+
+#### Paso 4 — Verificar que todo está saludable
+
+```bash
+docker compose ps
+```
+
+Todos los servicios deben aparecer en estado `healthy` o `running`. Si alguno está en `starting`, esperar unos segundos y repetir. También se puede verificar individualmente:
+
+```bash
+# Healthcheck de cada microservicio
+curl -s http://localhost:8080/q/health | python3 -m json.tool   # ms-credit-evaluation
+curl -s http://localhost:8081/q/health | python3 -m json.tool   # ms-risk
+curl -s http://localhost:8083/q/health | python3 -m json.tool   # ms-notifications
+
+# Keycloak
+curl -s http://localhost:9000/realms/banco | python3 -m json.tool
+
+# Frontend (debe retornar HTTP 200)
+curl -o /dev/null -w "%{http_code}\n" http://localhost:3000
+
+# LocalStack — verificar colas SQS y parámetros SSM
+docker exec localstack awslocal sqs list-queues
+docker exec localstack awslocal ssm get-parameters-by-path --path "/banco/" --recursive --query 'Parameters[*].Name' --output table
+```
+
+---
+
+### Opción B — Modo desarrollo (infraestructura en Docker, código fuente local)
+
+Ideal para modificar el código fuente de algún microservicio y ver los cambios al instante gracias al hot-reload de Quarkus dev mode.
+
+> **Prerrequisitos adicionales:** JDK 21, Maven 3.9+ y Node.js 20+ instalados en el sistema.
+
+#### Paso 1 — Clonar el repositorio
+
+```bash
+git clone <URL-del-repositorio> sistema-evaluacion-creditos
+cd sistema-evaluacion-creditos
+```
+
+#### Paso 2 — Levantar solo la infraestructura
+
+```bash
+docker compose -f docker-compose.infra.yml up -d
+```
+
+Esto levanta: PostgreSQL ×3 (puertos 5432, 5434, 5435), Keycloak (9000) y LocalStack (4566). Los microservicios y el frontend **no** se inician.
+
+Esperar a que todos estén saludables:
+
+```bash
+docker compose -f docker-compose.infra.yml ps
+```
+
+#### Paso 3 — Importar el realm de Keycloak
+
+`docker-compose.infra.yml` no importa el realm automáticamente (a diferencia del `docker-compose.yml` completo), por lo que hay que importarlo una sola vez vía la API REST de Keycloak:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" \
+  -X POST "http://localhost:9000/admin/realms" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(curl -s \
+    -d 'client_id=admin-cli&username=admin&password=admin&grant_type=password' \
+    'http://localhost:9000/realms/master/protocol/openid-connect/token' \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')" \
+  -d @scripts/keycloak-realm-banco.json
+```
+
+Una respuesta `201` indica que el realm `banco` fue importado correctamente.
+
+> Alternativa visual: abrir `http://localhost:9000`, ingresar con `admin / admin`, ir a **Create realm** y subir el archivo `scripts/keycloak-realm-banco.json`.
+
+#### Paso 4 — Actualizar parámetros SSM con rutas de localhost
+
+El script `localstack-init.sh` carga los parámetros SSM con hostnames internos de Docker (`postgres-credits`, `ms-risk`, `keycloak`). Al correr los microservicios localmente esos hostnames no resuelven, por lo que hay que sobreescribirlos con `localhost`:
+
+```bash
+docker exec -it localstack python3 << 'EOF'
+import boto3
+ssm = boto3.client('ssm', endpoint_url='http://localhost:4566',
+                   region_name='us-east-1',
+                   aws_access_key_id='test', aws_secret_access_key='test')
+
+overrides = [
+    ('/banco/ms-credit-evaluation/quarkus.datasource.reactive.url',
+     'postgresql://localhost:5432/creditos_db'),
+    ('/banco/ms-credit-evaluation/quarkus.rest-client.risk-service.url',
+     'http://localhost:8081'),
+    ('/banco/ms-credit-evaluation/mp.jwt.verify.publickey.location',
+     'http://localhost:9000/realms/banco/protocol/openid-connect/certs'),
+    ('/banco/ms-credit-evaluation/mp.jwt.verify.issuer',
+     'http://localhost:9000/realms/banco'),
+    ('/banco/ms-credit-evaluation/quarkus.sqs.endpoint-override',
+     'http://localhost:4566'),
+    ('/banco/ms-credit-evaluation/sqs.queue.url',
+     'http://localhost:4566/000000000000/credit-evaluation-notifications'),
+    ('/banco/ms-notifications/quarkus.datasource.reactive.url',
+     'postgresql://localhost:5434/notifications_db'),
+    ('/banco/ms-notifications/quarkus.sqs.endpoint-override',
+     'http://localhost:4566'),
+    ('/banco/ms-notifications/sqs.queue.url',
+     'http://localhost:4566/000000000000/credit-evaluation-notifications'),
+    ('/banco/ms-notifications/quarkus.ses.endpoint-override',
+     'http://localhost:4566'),
+]
+
+for name, value in overrides:
+    ssm.put_parameter(Name=name, Value=value, Type='String', Overwrite=True)
+    print(f'  OK  {name}')
+EOF
+```
+
+#### Paso 5 — Crear los archivos `.env` para desarrollo local
+
+```bash
+cp backend/ms-credit-evaluation/.env.example backend/ms-credit-evaluation/.env
+cp backend/ms-notifications/.env.example     backend/ms-notifications/.env
+cp backend/ms-risk/.env.example              backend/ms-risk/.env
+```
+
+`backend/ms-credit-evaluation/.env`:
+
+```dotenv
+SERVER_PORT=8080
+DB_REACTIVE_URL=
+DB_USERNAME=
+DB_PASSWORD=
+KEYCLOAK_URL=
+KEYCLOAK_REALM=
+KEYCLOAK_CLIENT_ID=
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+AWS_SSM_ENDPOINT=http://localhost:4566
+SSM_PREFIX=/banco/ms-credit-evaluation
+```
+
+`backend/ms-notifications/.env`:
+
+```dotenv
+SERVER_PORT=8080
+DB_REACTIVE_URL=
+DB_USERNAME=
+DB_PASSWORD=
+KEYCLOAK_URL=
+KEYCLOAK_REALM=
+KEYCLOAK_CLIENT_ID=
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+AWS_SSM_ENDPOINT=http://localhost:4566
+SSM_PREFIX=/banco/ms-notifications
+```
+
+`backend/ms-risk/.env` no necesita cambios — el servicio es un mock y no requiere ninguna variable de entorno externa.
+
+#### Paso 6 — Arrancar los microservicios (cada uno en su propia terminal)
+
+```bash
+# Terminal 1 — ms-risk (arrancar primero, ms-credit-evaluation depende de él)
+cd backend/ms-risk/infrastructure/entry-points/app
+mvn quarkus:dev
+
+# Terminal 2 — ms-credit-evaluation
+cd backend/ms-credit-evaluation/infrastructure/entry-points/app
+mvn quarkus:dev
+
+# Terminal 3 — ms-notifications
+cd backend/ms-notifications/infrastructure/entry-points/app
+mvn quarkus:dev
+```
+
+En modo `quarkus:dev` los cambios en el código fuente se recargan automáticamente sin reiniciar el proceso.
+
+Swagger UI disponible en:
+- `ms-credit-evaluation`: http://localhost:8080/swagger-ui
+- `ms-risk`: http://localhost:8081/swagger-ui
+
+#### Paso 7 — Frontend con hot-reload
+
+```bash
+cd frontend
+npm install       # solo la primera vez
+npm run dev
+```
+
+El servidor Vite queda disponible en `http://localhost:5173` con hot module replacement.
+
+> En modo dev el frontend habla directamente con `ms-credit-evaluation` en `http://localhost:8080`. En Docker usa el proxy Nginx en el puerto 3000.
+
+---
+
+### Crear usuarios de prueba en Keycloak
+
+El realm `banco` se importa sin usuarios. Hay que crearlos manualmente una sola vez, ya sea vía Admin Console o vía API.
+
+#### Vía Admin Console (interfaz gráfica)
+
+1. Abrir `http://localhost:9000` e ingresar con `admin / admin`.
+2. Seleccionar el realm **banco** en el selector superior izquierdo.
+3. Ir a **Users → Add user**. Completar `username` y `email`, guardar.
+4. En la pestaña **Credentials**: establecer una contraseña y desactivar **Temporary**.
+5. En la pestaña **Role mappings → Assign role**: asignar uno de los roles del realm: `ANALYST`, `ADMIN` o `VIEWER`.
+6. Repetir para cada usuario de prueba que se necesite.
+
+#### Vía API (un solo comando por usuario)
+
+```bash
+# 1. Obtener token de administrador
+ADMIN_TOKEN=$(curl -s \
+  -d 'client_id=admin-cli&username=admin&password=admin&grant_type=password' \
+  'http://localhost:9000/realms/master/protocol/openid-connect/token' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+
+# 2. Crear usuario analista
+curl -s -o /dev/null -w "%{http_code}\n" \
+  -X POST "http://localhost:9000/admin/realms/banco/users" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "analista1",
+    "email": "analista1@banco.com",
+    "enabled": true,
+    "credentials": [{"type": "password", "value": "password123", "temporary": false}],
+    "realmRoles": ["ANALYST"]
+  }'
+```
+
+Roles disponibles: `ANALYST` (evaluar y consultar), `ADMIN` (todo + gestión), `VIEWER` (solo consultar).
+
+---
+
+### Primer uso del sistema
+
+Con el stack levantado y al menos un usuario creado:
+
+1. Abrir `http://localhost:3000` (Opción A) o `http://localhost:5173` (Opción B dev).
+2. Hacer clic en **Iniciar sesión** — el frontend redirige a Keycloak (OIDC Authorization Code + PKCE).
+3. Ingresar con las credenciales del usuario creado (p. ej. `analista1 / password123`).
+4. Una vez autenticado, completar el formulario de evaluación de crédito.
+5. El sistema consulta `ms-risk` en paralelo (score + deudas), aplica la regla de negocio y persiste el resultado.
+6. `ms-credit-evaluation` publica un mensaje en SQS; `ms-notifications` lo consume en segundos y simula el envío de un email vía AWS SES (LocalStack lo intercepta sin enviarlo realmente).
+
+#### Verificar el flujo completo por consola
+
+```bash
+# Ver los logs de los microservicios en tiempo real (Opción A)
+docker compose logs -f ms-credit-evaluation ms-notifications
+
+# Confirmar que el mensaje llegó a SQS (contador debe bajar a 0 tras unos segundos)
+docker exec localstack awslocal sqs get-queue-attributes \
+  --queue-url http://localhost:4566/000000000000/credit-evaluation-notifications \
+  --attribute-names ApproximateNumberOfMessages
+
+# Ver emails "enviados" por LocalStack SES
+docker exec localstack awslocal ses list-identities
+```
+
+---
+
+### Comandos útiles
+
+```bash
+# ── Docker Compose ────────────────────────────────────────────
+docker compose ps                          # estado de todos los servicios
+docker compose logs -f <servicio>          # logs en tiempo real de un servicio
+docker compose restart <servicio>          # reiniciar un servicio sin bajar el resto
+docker compose down                        # bajar todo (conserva volúmenes/datos)
+docker compose down -v                     # bajar todo y borrar volúmenes (reset completo)
+
+# ── Solo infraestructura (Opción B) ──────────────────────────
+docker compose -f docker-compose.infra.yml up -d
+docker compose -f docker-compose.infra.yml down
+
+# ── Bases de datos ────────────────────────────────────────────
+psql -h localhost -p 5432 -U postgres -d creditos_db       # ms-credit-evaluation
+psql -h localhost -p 5434 -U postgres -d notifications_db  # ms-notifications
+psql -h localhost -p 5435 -U postgres -d keycloak_db       # Keycloak (contraseña: postgres)
+
+# ── LocalStack ────────────────────────────────────────────────
+docker exec localstack awslocal sqs list-queues
+docker exec localstack awslocal ssm get-parameters-by-path \
+  --path "/banco/" --recursive --output table
+
+# ── Healthchecks ──────────────────────────────────────────────
+curl -s http://localhost:8080/q/health    # ms-credit-evaluation
+curl -s http://localhost:8081/q/health    # ms-risk
+curl -s http://localhost:8083/q/health    # ms-notifications
+curl -s http://localhost:9000/realms/banco/.well-known/openid-configuration   # Keycloak realm
+```
