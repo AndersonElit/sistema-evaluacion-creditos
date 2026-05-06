@@ -114,8 +114,8 @@ awslocal ses send-email \
     "Body": {"Text": {"Data": "Email de prueba"}}
   }'
 
-# Ver emails enviados (LocalStack guarda un log)
-curl -s http://localhost:4566/_localstack/ses/ | jq .
+# Ver emails enviados (LocalStack 3.x)
+curl -s http://localhost:4566/_aws/ses | jq .
 ```
 
 ## 6. Verificar mensajes en DLQ (tras 3 fallos)
@@ -136,9 +136,9 @@ docker compose -f docker-compose.infra.yml restart localstack
 ```
 
 ## Estado esperado al finalizar
-- [ ] Cola `credit-evaluation-notifications` existe con VisibilityTimeout=60 y redrive=3
-- [ ] Cola `credit-eval-notif-dlq` existe
-- [ ] Email `noreply@banco.com` verificado en SES
-- [ ] Mensaje de prueba publicado y visible en la cola
+- [x] Cola `credit-evaluation-notifications` existe con VisibilityTimeout=60 y redrive=3
+- [x] Cola `credit-eval-notif-dlq` existe
+- [x] Email `noreply@banco.com` verificado en SES (VerificationStatus: Success)
+- [x] Mensaje de prueba publicado y visible en la cola
 - [ ] `ms-notifications` (paso 08) consume el mensaje y lo elimina de la cola
-- [ ] Cola queda vacía tras el consumo exitoso
+- [x] Cola queda vacía tras el consumo exitoso (limpieza manual del mensaje de prueba)
