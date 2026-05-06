@@ -320,6 +320,45 @@ Si ms-risk falla repetidamente, el Circuit Breaker abre y se retorna 503 al clie
 
 ---
 
+## ADR-011: AWS SSM Parameter Store para Gestión de Configuración
+
+**Estado:** Aceptado
+**Fecha:** 2026-05-06
+**Contexto:** Los `application.properties` de cada microservicio contenían valores de entorno hardcodeados o delegados a variables de entorno de Docker Compose (URLs de bases de datos, credenciales, endpoints de SQS/SES, URLs de Keycloak). Este enfoque dificulta la rotación de credenciales, no diferencia secretos de configuración ordinaria, y requiere reconstruir imágenes o modificar el Compose para cambiar valores entre entornos.
+
+### Opciones evaluadas
+
+| Criterio | Variables de entorno (.env) | HashiCorp Vault | AWS SSM Parameter Store |
+|----------|-----------------------------|-----------------|------------------------|
+| Jerarquía por servicio | ❌ plano, sin namespace | ✅ rutas arbitrarias | ✅ rutas `/app/servicio/param` |
+| Tipos Secret vs String | ❌ todos iguales | ✅ policies + dynamic secrets | ✅ `SecureString` (KMS) vs `String` |
+| Emulación local (LocalStack) | ❌ no aplica | ❌ Vault separado | **✅ LocalStack 3.x incluye SSM** |
+| Integración Quarkus | ❌ solo env vars | Plugin Vault | **✅ quarkus-config-aws-ssm** |
+| Operativo en producción (AWS) | ❌ gestión manual | Infra adicional | **✅ managed service, HA nativo** |
+| Auditoría de acceso | ❌ | ✅ | **✅ CloudTrail automático** |
+| Rotación de credenciales | ❌ manual | ✅ automática | ✅ con Lambda trigger |
+| Curva de aprendizaje | Muy baja | Alta | **Media** |
+
+### Decisión
+**AWS SSM Parameter Store** porque:
+
+1. **Paridad local/nube**: LocalStack 3.x emula SSM sin costo adicional de infraestructura. El mismo init script que crea los parámetros localmente crea los equivalentes en AWS real.
+2. **Tipado de secretos**: las contraseñas de base de datos se almacenan como `SecureString` (cifradas con KMS en AWS); el resto como `String`. Esta distinción fuerza a tratar los secretos de forma diferente desde el diseño.
+3. **Integración nativa Quarkus**: la extensión `quarkus-config-aws-ssm` expone los parámetros SSM como fuente de configuración MicroProfile en tiempo de arranque — sin cambios en el código de negocio.
+4. **Eliminación de credenciales del repositorio**: `application.properties` queda con únicamente configuración estructural (tipo de BD, swagger, cors). Ningún valor sensible viaja en el código fuente ni en el Docker Compose.
+5. **Jerarquía por servicio**: cada microservicio lee solo su prefijo `/banco/ms-<servicio>/`, sin acceso a los parámetros de otros servicios.
+
+### Consecuencias
+- Se agrega `ssm` a los `SERVICES` de LocalStack en docker-compose.
+- El `localstack-init.sh` crea todos los parámetros SSM junto con las colas SQS y la identidad SES.
+- Cada microservicio agrega la dependencia `quarkus-config-aws-ssm` y configura el prefijo SSM en `application.properties`.
+- Los contenedores de microservicios reciben solo `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` y `AWS_SSM_ENDPOINT` (en local); en AWS estos valores vienen del IAM Role del task.
+- Los valores concretos (URLs, credenciales) dejan de existir en `application.properties` comiteado.
+
+> Ver diseño detallado en `docs/11-ssm-config.md` y guía de implementación en `development-plan/09b-ssm-parameter-store.md`.
+
+---
+
 ## Resumen de Decisiones
 
 | ID | Decisión | Alternativa Descartada | Razón Principal |
@@ -334,3 +373,4 @@ Si ms-risk falla repetidamente, el Circuit Breaker abre y se retorna 503 al clie
 | ADR-008 | Auth en microservicio independiente (principio) | Auth embebida en ms-credit-evaluation | SRP, aislamiento de BD, cero acoplamiento runtime |
 | ADR-009 | Notificaciones en ms-notifications independiente | Worker embebido en ms-credit-evaluation | SRP, resiliencia aislada, escalabilidad diferenciada |
 | ADR-010 | Keycloak como IAM | ms-auth propio (SmallRye JWT) | OIDC estándar, sin código de seguridad propio, revocación real, extensibilidad futura |
+| ADR-011 | AWS SSM Parameter Store para configuración | Variables de entorno (.env) | Tipado de secretos, paridad local/nube vía LocalStack, auditoría, eliminación de credenciales del repo |

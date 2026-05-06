@@ -105,7 +105,7 @@
 | Validación de entrada | API | Bean Validation `@Valid`, `@Pattern`, `@Positive`, `@Min`/`@Max` |
 | Validación de cédula | Dominio | Algoritmo Módulo 10 como Value Object `Cedula` |
 | Encriptación en tránsito | Infraestructura | HTTPS (TLS) para todas las comunicaciones externas |
-| Secretos fuera del código | Configuración | Variables de entorno (`${DB_PASSWORD}`, `${AWS_SECRET_ACCESS_KEY}`) |
+| Secretos fuera del código | Configuración | AWS SSM Parameter Store — parámetros cargados en arranque vía `quarkus-config-aws-ssm`; LocalStack en desarrollo |
 | Least privilege en AWS | IAM | Políticas separadas por servicio (publish-only / consume-only) |
 | Idempotencia | Dominio / DB | `UNIQUE INDEX` en `notifications.evaluacion_id` |
 | Errores genéricos al cliente | API | `ExceptionMapper` global — sin stack traces en respuestas |
@@ -158,9 +158,13 @@ Derivados del modelo de amenazas — son requisitos verificables, no aspiracione
 - Solo ms-credit-evaluation puede llamar a ms-risk (Docker network o security group)
 
 ### SR-06: Gestión de Secretos
-- Ninguna credencial (DB password, AWS keys, Keycloak admin password) debe existir en el código fuente ni en archivos `.properties` comiteados
-- En producción: usar AWS Secrets Manager o Vault
-- En desarrollo: variables de entorno en `.env` (excluido de git via `.gitignore`)
+- Ninguna credencial (DB password, AWS keys, URLs de entorno, endpoints de servicios) debe existir en el código fuente ni en archivos `.properties` comiteados
+- En todos los entornos: **AWS SSM Parameter Store** es la fuente de configuración de runtime (LocalStack en desarrollo, AWS SSM real en producción)
+- Las contraseñas y claves se almacenan como `SecureString` en SSM; las URLs y configuración no sensible como `String`
+- El arranque de cada microservicio carga su prefijo `/banco/ms-<servicio>/` de SSM antes de inicializar el contexto CDI
+- En producción, los microservicios se autentican contra SSM vía IAM Role del ECS task — sin credenciales explícitas
+- En desarrollo local, se usan credenciales ficticias `test/test` contra LocalStack (`AWS_SSM_ENDPOINT=http://localstack:4566`)
+- Los parámetros SSM de producción son gestionados vía IaC (Terraform/CDK) — nunca manualmente desde consola
 
 ### SR-07: Seguridad en Transporte
 - Todas las comunicaciones externas deben usar TLS 1.2 mínimo (TLS 1.3 preferido)
@@ -204,10 +208,13 @@ Derivados del modelo de amenazas — son requisitos verificables, no aspiracione
 ### Configuración e Infraestructura
 
 ```
-[ ] Ninguna credencial en application.properties (usar ${ENV_VAR:default_dev_value})
+[ ] Ninguna credencial ni URL de entorno en application.properties — todo en SSM Parameter Store
+[ ] application.properties solo contiene config estructural (db-kind, swagger, cors, prefijo SSM)
 [ ] .env y *.pem en .gitignore
 [ ] Docker Compose no expone puertos innecesarios al host (ms-risk solo accesible internamente)
-[ ] Variables de entorno de producción gestionadas por Secrets Manager / Vault
+[ ] Todos los parámetros SSM de producción gestionados via IaC (no creados manualmente en consola)
+[ ] SecureString usado para contraseñas y API keys; String para URLs y config no sensible
+[ ] IAM Role con política de mínimo privilegio: solo GetParameter sobre /banco/ms-<servicio>/*
 [ ] Imágenes Docker usan usuario no-root (USER 1001 en Dockerfile)
 ```
 

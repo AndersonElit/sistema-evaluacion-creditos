@@ -82,14 +82,14 @@ services:
       retries: 10
       start_period: 30s
 
-  # ── LocalStack (SQS + SES) ────────────────────────────────────
+  # ── LocalStack (SQS + SES + SSM) ─────────────────────────────
   localstack:
     image: localstack/localstack:3.0
     container_name: localstack
     ports:
       - "4566:4566"
     environment:
-      SERVICES: sqs,ses
+      SERVICES: sqs,ses,ssm
       DEFAULT_REGION: us-east-1
       LOCALSTACK_AUTH_TOKEN: ""
     volumes:

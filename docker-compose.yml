@@ -86,7 +86,7 @@ services:
     ports:
       - "4566:4566"
     environment:
-      SERVICES: sqs,ses
+      SERVICES: sqs,ses,ssm
       DEFAULT_REGION: us-east-1
       LOCALSTACK_AUTH_TOKEN: ""
     volumes:
@@ -124,20 +124,11 @@ services:
     ports:
       - "8080:8080"
     environment:
-      DB_USERNAME: postgres
-      DB_PASSWORD: postgres
-      DB_REACTIVE_URL: postgresql://postgres-credits:5432/creditos_db
-      # Keycloak: el issuer debe coincidir con el host con el que el browser obtuvo el token (localhost:9000)
-      # mientras que el publickey lo descarga el backend usando el nombre interno del contenedor
-      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
-      KEYCLOAK_ISSUER_URL: http://localhost:9000
-      KEYCLOAK_REALM: banco
-      RISK_SERVICE_URL: http://ms-risk:8081
-      SQS_QUEUE_URL: http://localstack:4566/000000000000/credit-evaluation-notifications
-      SQS_ENDPOINT_URL: http://localstack:4566
-      AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+      AWS_SSM_ENDPOINT: http://localstack:4566
+      SSM_PREFIX: /banco/ms-credit-evaluation
     depends_on:
       postgres-credits:
         condition: service_healthy
@@ -162,18 +153,11 @@ services:
     ports:
       - "8083:8083"
     environment:
-      NOTIF_DB_HOST: postgres-notifications
-      NOTIF_DB_PORT: "5432"
-      NOTIF_DB_NAME: notifications_db
-      NOTIF_DB_USERNAME: postgres
-      NOTIF_DB_PASSWORD: postgres
-      SQS_QUEUE_URL: http://localstack:4566/000000000000/credit-evaluation-notifications
-      SQS_ENDPOINT_URL: http://localstack:4566
-      SES_ENDPOINT_URL: http://localstack:4566
-      SES_FROM_EMAIL: noreply@banco.com
-      AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+      AWS_SSM_ENDPOINT: http://localstack:4566
+      SSM_PREFIX: /banco/ms-notifications
     depends_on:
       postgres-notifications:
         condition: service_healthy

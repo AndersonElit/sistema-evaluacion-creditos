@@ -97,14 +97,14 @@ services:
       retries: 10
       start_period: 30s
 
-  # ── LocalStack (SQS + SES) ────────────────────────────────────
+  # ── LocalStack (SQS + SES + SSM) ─────────────────────────────
   localstack:
     image: localstack/localstack:3.0
     container_name: localstack
     ports:
       - "4566:4566"
     environment:
-      SERVICES: sqs,ses
+      SERVICES: sqs,ses,ssm
       DEFAULT_REGION: us-east-1
       LOCALSTACK_AUTH_TOKEN: ""
     volumes:
@@ -123,9 +123,11 @@ services:
 #!/bin/bash
 set -e
 
+# ──────────────────────────────────────────────────────────────
+# SQS
+# ──────────────────────────────────────────────────────────────
 echo "[LocalStack] Creando colas SQS..."
 
-# DLQ primero (la cola principal la referencia)
 awslocal sqs create-queue \
   --queue-name credit-eval-notif-dlq \
   --attributes MessageRetentionPeriod=1209600
@@ -135,7 +137,6 @@ DLQ_ARN=$(awslocal sqs get-queue-attributes \
   --attribute-names QueueArn \
   --query 'Attributes.QueueArn' --output text)
 
-# Cola principal con redrive policy hacia DLQ
 awslocal sqs create-queue \
   --queue-name credit-evaluation-notifications \
   --attributes \
@@ -144,11 +145,78 @@ awslocal sqs create-queue \
     MessageRetentionPeriod=86400,\
     RedrivePolicy="{\"deadLetterTargetArn\":\"${DLQ_ARN}\",\"maxReceiveCount\":\"3\"}"
 
+# ──────────────────────────────────────────────────────────────
+# SES
+# ──────────────────────────────────────────────────────────────
 echo "[LocalStack] Verificando identidad SES..."
 awslocal ses verify-email-identity --email-address noreply@banco.com
 
+# ──────────────────────────────────────────────────────────────
+# SSM Parameter Store — ms-credit-evaluation
+# ──────────────────────────────────────────────────────────────
+echo "[LocalStack] Creando parámetros SSM para ms-credit-evaluation..."
+
+QUEUE_URL="http://localstack:4566/000000000000/credit-evaluation-notifications"
+SQS_ENDPOINT="http://localstack:4566"
+KC_BASE="http://keycloak:9000"
+
+awslocal ssm put-parameter --name "/banco/ms-credit-evaluation/quarkus.datasource.username" \
+  --value "postgres" --type String --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-credit-evaluation/quarkus.datasource.password" \
+  --value "postgres" --type SecureString --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-credit-evaluation/quarkus.datasource.reactive.url" \
+  --value "postgresql://postgres-credits:5432/creditos_db" --type String --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-credit-evaluation/quarkus.rest-client.risk-service.url" \
+  --value "http://ms-risk:8081" --type String --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-credit-evaluation/mp.jwt.verify.publickey.location" \
+  --value "${KC_BASE}/realms/banco/protocol/openid-connect/certs" --type String --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-credit-evaluation/mp.jwt.verify.issuer" \
+  --value "${KC_BASE}/realms/banco" --type String --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-credit-evaluation/quarkus.sqs.endpoint-override" \
+  --value "${SQS_ENDPOINT}" --type String --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-credit-evaluation/sqs.queue.url" \
+  --value "${QUEUE_URL}" --type String --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-credit-evaluation/quarkus.http.cors.origins" \
+  --value "http://localhost:3000" --type String --overwrite
+
+# ──────────────────────────────────────────────────────────────
+# SSM Parameter Store — ms-notifications
+# ──────────────────────────────────────────────────────────────
+echo "[LocalStack] Creando parámetros SSM para ms-notifications..."
+
+awslocal ssm put-parameter --name "/banco/ms-notifications/quarkus.datasource.username" \
+  --value "postgres" --type String --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-notifications/quarkus.datasource.password" \
+  --value "postgres" --type SecureString --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-notifications/quarkus.datasource.reactive.url" \
+  --value "postgresql://postgres-notifications:5434/notifications_db" --type String --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-notifications/quarkus.sqs.endpoint-override" \
+  --value "${SQS_ENDPOINT}" --type String --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-notifications/sqs.queue.url" \
+  --value "${QUEUE_URL}" --type String --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-notifications/quarkus.ses.endpoint-override" \
+  --value "${SQS_ENDPOINT}" --type String --overwrite
+
+awslocal ssm put-parameter --name "/banco/ms-notifications/aws.ses.from.email" \
+  --value "noreply@banco.com" --type String --overwrite
+
 echo "[LocalStack] Inicialización completa."
 awslocal sqs list-queues
+awslocal ssm get-parameters-by-path --path "/banco/" --recursive \
+  | jq '[.Parameters[] | {Name, Type}]'
 ```
 
 ## Comandos de ejecución
@@ -194,3 +262,4 @@ aws --endpoint-url=http://localhost:4566 sqs list-queues \
 - [ ] `postgres-keycloak` healthy en puerto 5435
 - [ ] `keycloak` accesible en http://localhost:9000/admin
 - [ ] `localstack` con colas `credit-evaluation-notifications` y `credit-eval-notif-dlq` creadas
+- [ ] Parámetros SSM de ms-credit-evaluation y ms-notifications creados en `/banco/`

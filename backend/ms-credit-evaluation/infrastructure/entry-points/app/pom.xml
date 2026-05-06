@@ -30,6 +30,15 @@
             <artifactId>infrastructure-driven-adapters-sqs-producer</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- SSM Config Source: carga parámetros de SSM Parameter Store al arrancar -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>ssm</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>url-connection-client</artifactId>
+        </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-smallrye-jwt</artifactId>
