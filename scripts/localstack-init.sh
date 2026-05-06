@@ -26,78 +26,50 @@ echo "[LocalStack] Verificando identidad SES..."
 awslocal ses verify-email-identity --email-address noreply@banco.com
 
 # ──────────────────────────────────────────────────────────────
-# SSM Parameter Store — ms-credit-evaluation
+# SSM Parameter Store
+# Se usa boto3 en lugar de awslocal porque AWS CLI v1 intenta
+# hacer HTTP GET de cualquier valor que empiece con http://,
+# lo que rompe parámetros con URLs internas (http://ms-risk:8081).
 # ──────────────────────────────────────────────────────────────
-echo "[LocalStack] Creando parámetros SSM para ms-credit-evaluation..."
+echo "[LocalStack] Creando parámetros SSM..."
 
-QUEUE_URL="http://localstack:4566/000000000000/credit-evaluation-notifications"
-SQS_ENDPOINT="http://localstack:4566"
-KC_BASE="http://keycloak:8080"
+python3 << 'PYEOF'
+import boto3
 
-awslocal ssm put-parameter \
-  --name "/banco/ms-credit-evaluation/quarkus.datasource.username" \
-  --value "postgres" --type String --overwrite
+ssm = boto3.client(
+    'ssm',
+    endpoint_url='http://localhost:4566',
+    region_name='us-east-1',
+    aws_access_key_id='test',
+    aws_secret_access_key='test',
+)
 
-awslocal ssm put-parameter \
-  --name "/banco/ms-credit-evaluation/quarkus.datasource.password" \
-  --value "postgres" --type SecureString --overwrite
+params = [
+    # ms-credit-evaluation
+    ('/banco/ms-credit-evaluation/quarkus.datasource.username',              'postgres',                                                                  'String'),
+    ('/banco/ms-credit-evaluation/quarkus.datasource.password',              'postgres',                                                                  'SecureString'),
+    ('/banco/ms-credit-evaluation/quarkus.datasource.reactive.url',          'postgresql://postgres-credits:5432/creditos_db',                            'String'),
+    ('/banco/ms-credit-evaluation/quarkus.rest-client.risk-service.url',     'http://ms-risk:8081',                                                       'String'),
+    ('/banco/ms-credit-evaluation/mp.jwt.verify.publickey.location',         'http://keycloak:8080/realms/banco/protocol/openid-connect/certs',           'String'),
+    ('/banco/ms-credit-evaluation/mp.jwt.verify.issuer',                     'http://localhost:9000/realms/banco',                                        'String'),
+    ('/banco/ms-credit-evaluation/quarkus.sqs.endpoint-override',            'http://localstack:4566',                                                    'String'),
+    ('/banco/ms-credit-evaluation/sqs.queue.url',                            'http://localstack:4566/000000000000/credit-evaluation-notifications',        'String'),
+    # ms-notifications
+    ('/banco/ms-notifications/quarkus.datasource.username',                  'postgres',                                                                  'String'),
+    ('/banco/ms-notifications/quarkus.datasource.password',                  'postgres',                                                                  'SecureString'),
+    ('/banco/ms-notifications/quarkus.datasource.reactive.url',              'postgresql://postgres-notifications:5432/notifications_db',                 'String'),
+    ('/banco/ms-notifications/quarkus.sqs.endpoint-override',                'http://localstack:4566',                                                    'String'),
+    ('/banco/ms-notifications/sqs.queue.url',                                'http://localstack:4566/000000000000/credit-evaluation-notifications',        'String'),
+    ('/banco/ms-notifications/quarkus.ses.endpoint-override',                'http://localstack:4566',                                                    'String'),
+    ('/banco/ms-notifications/aws.ses.from.email',                           'noreply@banco.com',                                                         'String'),
+]
 
-awslocal ssm put-parameter \
-  --name "/banco/ms-credit-evaluation/quarkus.datasource.reactive.url" \
-  --value "postgresql://postgres-credits:5432/creditos_db" --type String --overwrite
+for name, value, ptype in params:
+    ssm.put_parameter(Name=name, Value=value, Type=ptype, Overwrite=True)
+    print(f'  OK  {name}')
 
-awslocal ssm put-parameter \
-  --name "/banco/ms-credit-evaluation/quarkus.rest-client.risk-service.url" \
-  --value "http://ms-risk:8081" --type String --overwrite
-
-awslocal ssm put-parameter \
-  --name "/banco/ms-credit-evaluation/mp.jwt.verify.publickey.location" \
-  --value "${KC_BASE}/realms/banco/protocol/openid-connect/certs" --type String --overwrite
-
-awslocal ssm put-parameter \
-  --name "/banco/ms-credit-evaluation/mp.jwt.verify.issuer" \
-  --value "http://localhost:9000/realms/banco" --type String --overwrite
-
-awslocal ssm put-parameter \
-  --name "/banco/ms-credit-evaluation/quarkus.sqs.endpoint-override" \
-  --value "${SQS_ENDPOINT}" --type String --overwrite
-
-awslocal ssm put-parameter \
-  --name "/banco/ms-credit-evaluation/sqs.queue.url" \
-  --value "${QUEUE_URL}" --type String --overwrite
-
-# ──────────────────────────────────────────────────────────────
-# SSM Parameter Store — ms-notifications
-# ──────────────────────────────────────────────────────────────
-echo "[LocalStack] Creando parámetros SSM para ms-notifications..."
-
-awslocal ssm put-parameter \
-  --name "/banco/ms-notifications/quarkus.datasource.username" \
-  --value "postgres" --type String --overwrite
-
-awslocal ssm put-parameter \
-  --name "/banco/ms-notifications/quarkus.datasource.password" \
-  --value "postgres" --type SecureString --overwrite
-
-awslocal ssm put-parameter \
-  --name "/banco/ms-notifications/quarkus.datasource.reactive.url" \
-  --value "postgresql://postgres-notifications:5432/notifications_db" --type String --overwrite
-
-awslocal ssm put-parameter \
-  --name "/banco/ms-notifications/quarkus.sqs.endpoint-override" \
-  --value "${SQS_ENDPOINT}" --type String --overwrite
-
-awslocal ssm put-parameter \
-  --name "/banco/ms-notifications/sqs.queue.url" \
-  --value "${QUEUE_URL}" --type String --overwrite
-
-awslocal ssm put-parameter \
-  --name "/banco/ms-notifications/quarkus.ses.endpoint-override" \
-  --value "${SQS_ENDPOINT}" --type String --overwrite
-
-awslocal ssm put-parameter \
-  --name "/banco/ms-notifications/aws.ses.from.email" \
-  --value "noreply@banco.com" --type String --overwrite
+print(f'\n[SSM] {len(params)} parámetros creados.')
+PYEOF
 
 echo "[LocalStack] Inicialización completa."
 awslocal sqs list-queues
