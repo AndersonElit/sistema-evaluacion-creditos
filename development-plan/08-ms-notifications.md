@@ -1,9 +1,11 @@
 # Paso 08 — ms-notifications: Consumer SQS, Persistencia e Email
 
 ## Objetivo
-Implementar `ms-notifications` completo: scaffold, migración manual de `notifications_db`,
-consumer SQS con `@Scheduled`, idempotencia por `evaluacion_id`, y
-`EmailSenderService` usando AWS SES (LocalStack en dev).
+Implementar `ms-notifications` completo respetando arquitectura hexagonal:
+- `infrastructure/driven-adapters/postgres` → solo operaciones en BD (`NotificationEntity`)
+- `infrastructure/driven-adapters/ses` → adaptador de envío de email (`EmailSenderService`)
+- `application/use-cases` → caso de uso (`ProcesarNotificacionUseCase`) con la lógica de negocio
+- `infrastructure/entry-points/sqs-consumer` → consumer SQS que delega al caso de uso
 
 ## Prerrequisitos
 - Paso 01 completado (`postgres-notifications` en puerto 5434 y LocalStack en 4566)
@@ -56,9 +58,27 @@ CREATE UNIQUE INDEX idx_notifications_evaluacion_unique
     ON notifications (evaluacion_id);
 ```
 
-## 3. Entidad JPA Reactiva — `infrastructure/driven-adapters/postgres`
+## 3. Port y Adaptador de Persistencia — `application/use-cases` + `infrastructure/driven-adapters/postgres`
 
-### `NotificationEntity.java`
+El use case depende del port (interfaz), no de la entidad JPA.
+El adaptador implementa el port y encapsula todo detalle de Hibernate Reactive.
+
+### `NotificationPort.java` — `application/use-cases`
+```java
+package com.msnotifications.usecase.port;
+
+import io.smallrye.mutiny.Uni;
+import java.util.UUID;
+
+public interface NotificationPort {
+    Uni<Boolean> existeEnviada(UUID evaluacionId);
+    Uni<UUID> crear(UUID evaluacionId, String destinatarioEmail,
+                    String tipoNotificacion, String mensajeSqsId);
+    Uni<Void> marcarEnviada(UUID id);
+}
+```
+
+### `NotificationEntity.java` — `infrastructure/driven-adapters/postgres`
 ```java
 package com.msnotifications.postgres.entity;
 
@@ -102,11 +122,52 @@ public class NotificationEntity extends PanacheEntityBase {
 
     public enum TipoNotif { APROBADO, RECHAZADO }
     public enum EstadoNotif { PENDIENTE, ENVIADO, FALLIDO }
+}
+```
 
-    public static io.smallrye.mutiny.Uni<Boolean> existsByEvaluacionIdAndEstado(
-            UUID evalId, EstadoNotif estado) {
-        return count("evaluacionId = ?1 AND estado = ?2", evalId, estado)
+### `NotificationAdapter.java` — `infrastructure/driven-adapters/postgres`
+```java
+package com.msnotifications.postgres.adapter;
+
+import com.msnotifications.postgres.entity.NotificationEntity;
+import com.msnotifications.usecase.port.NotificationPort;
+import io.smallrye.mutiny.Uni;
+import jakarta.enterprise.context.ApplicationScoped;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@ApplicationScoped
+public class NotificationAdapter implements NotificationPort {
+
+    @Override
+    public Uni<Boolean> existeEnviada(UUID evaluacionId) {
+        return NotificationEntity.count(
+                "evaluacionId = ?1 AND estado = ?2",
+                evaluacionId, NotificationEntity.EstadoNotif.ENVIADO)
                 .map(n -> n > 0);
+    }
+
+    @Override
+    public Uni<UUID> crear(UUID evaluacionId, String destinatarioEmail,
+                            String tipoNotificacion, String mensajeSqsId) {
+        NotificationEntity notif = new NotificationEntity();
+        notif.evaluacionId = evaluacionId;
+        notif.destinatarioEmail = destinatarioEmail;
+        notif.tipoNotificacion = NotificationEntity.TipoNotif.valueOf(tipoNotificacion);
+        notif.mensajeSqsId = mensajeSqsId;
+        return notif.<NotificationEntity>persist().map(n -> n.id);
+    }
+
+    @Override
+    public Uni<Void> marcarEnviada(UUID id) {
+        return NotificationEntity.<NotificationEntity>findById(id)
+                .invoke(n -> {
+                    n.estado = NotificationEntity.EstadoNotif.ENVIADO;
+                    n.enviadoEn = Instant.now();
+                    n.intentos++;
+                })
+                .replaceWithVoid();
     }
 }
 ```
@@ -135,11 +196,13 @@ public record EvaluacionCompletadaEvent(
 ) {}
 ```
 
-## 5. Email Sender Reactivo — `infrastructure/driven-adapters/postgres`
+## 5. Email Sender Reactivo — `infrastructure/driven-adapters/ses`
+
+Módulo dedicado para la integración con AWS SES. No mezcla responsabilidades con el adaptador de PostgreSQL.
 
 ### `EmailSenderService.java`
 ```java
-package com.msnotifications.postgres.repository;
+package com.msnotifications.ses.adapter;
 
 import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -210,7 +273,67 @@ public class EmailSenderService {
 }
 ```
 
-## 6. Consumer SQS Reactivo — `infrastructure/entry-points/sqs-consumer`
+## 6. Caso de Uso — `application/use-cases`
+
+Contiene la lógica de negocio: verificar idempotencia, persistir la entidad y delegar el envío al adaptador SES.
+
+### `ProcesarNotificacionUseCase.java`
+```java
+package com.msnotifications.usecase;
+
+import com.msnotifications.model.entity.EvaluacionCompletadaEvent;
+import com.msnotifications.ses.adapter.EmailSenderService;
+import com.msnotifications.usecase.port.NotificationPort;
+import io.quarkus.hibernate.reactive.panache.common.ReactiveTransactional;
+import io.smallrye.mutiny.Uni;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.UUID;
+
+@ApplicationScoped
+public class ProcesarNotificacionUseCase {
+
+    private static final Logger log = LoggerFactory.getLogger(ProcesarNotificacionUseCase.class);
+
+    @Inject
+    NotificationPort notificationPort;
+
+    @Inject
+    EmailSenderService emailSender;
+
+    @ReactiveTransactional
+    public Uni<Void> procesar(EvaluacionCompletadaEvent evento, String mensajeSqsId) {
+        UUID evalId = UUID.fromString(evento.evaluacionId());
+
+        return notificationPort.existeEnviada(evalId)
+                .chain(yaEnviado -> {
+                    if (yaEnviado) {
+                        log.info("Notificación ya enviada para evaluacion {} — ignorando", evalId);
+                        return Uni.createFrom().voidItem();
+                    }
+
+                    return notificationPort.crear(
+                                    evalId,
+                                    evento.destinatarioEmail(),
+                                    evento.estadoFinal(),
+                                    mensajeSqsId)
+                            .chain(notifId -> emailSender.enviar(
+                                    evento.destinatarioEmail(),
+                                    evento.estadoFinal(),
+                                    evento.montoSolicitado(),
+                                    evento.fechaEvaluacion())
+                                    .chain(() -> notificationPort.marcarEnviada(notifId)));
+                });
+    }
+}
+```
+
+## 7. Consumer SQS Reactivo — `infrastructure/entry-points/sqs-consumer`
+
+Solo responsable de interactuar con SQS: recibir, deserializar, delegar al caso de uso y eliminar.
 
 ### `NotificationConsumer.java`
 ```java
@@ -218,9 +341,7 @@ package com.msnotifications.sqsconsumer.adapter;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.msnotifications.model.entity.EvaluacionCompletadaEvent;
-import com.msnotifications.postgres.entity.NotificationEntity;
-import com.msnotifications.postgres.repository.EmailSenderService;
-import io.quarkus.hibernate.reactive.panache.common.ReactiveTransactional;
+import com.msnotifications.usecase.ProcesarNotificacionUseCase;
 import io.quarkus.scheduler.Scheduled;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
@@ -232,16 +353,13 @@ import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.*;
 
-import java.time.Instant;
-import java.util.UUID;
-
 @ApplicationScoped
 public class NotificationConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(NotificationConsumer.class);
 
     @Inject SqsAsyncClient sqsClient;
-    @Inject EmailSenderService emailSender;
+    @Inject ProcesarNotificacionUseCase useCase;
     @Inject ObjectMapper objectMapper;
 
     @ConfigProperty(name = "sqs.queue.url")
@@ -268,51 +386,22 @@ public class NotificationConsumer {
                 });
     }
 
-    @ReactiveTransactional
     Uni<Void> procesarYEliminar(Message msg) {
-        return procesarEvento(msg)
+        return deserializar(msg)
+                .chain(evento -> useCase.procesar(evento, msg.messageId()))
                 .chain(() -> eliminar(msg.receiptHandle()))
                 .onFailure().invoke(e ->
                         log.error("Error procesando mensaje {}: {}", msg.messageId(), e.getMessage()))
                 .onFailure().recoverWithNull(); // no eliminar: SQS reintentará → DLQ
     }
 
-    private Uni<Void> procesarEvento(Message msg) {
-        EvaluacionCompletadaEvent evento;
+    private Uni<EvaluacionCompletadaEvent> deserializar(Message msg) {
         try {
-            evento = objectMapper.readValue(msg.body(), EvaluacionCompletadaEvent.class);
+            return Uni.createFrom().item(
+                    objectMapper.readValue(msg.body(), EvaluacionCompletadaEvent.class));
         } catch (Exception e) {
             return Uni.createFrom().failure(e);
         }
-
-        UUID evalId = UUID.fromString(evento.evaluacionId());
-
-        return NotificationEntity.existsByEvaluacionIdAndEstado(
-                evalId, NotificationEntity.EstadoNotif.ENVIADO)
-                .chain(yaEnviado -> {
-                    if (yaEnviado) {
-                        log.info("Notificación ya enviada para evaluacion {} — ignorando", evalId);
-                        return Uni.createFrom().voidItem();
-                    }
-
-                    NotificationEntity notif = new NotificationEntity();
-                    notif.evaluacionId = evalId;
-                    notif.destinatarioEmail = evento.destinatarioEmail();
-                    notif.tipoNotificacion = NotificationEntity.TipoNotif.valueOf(evento.estadoFinal());
-                    notif.mensajeSqsId = msg.messageId();
-
-                    return notif.<NotificationEntity>persist()
-                            .chain(n -> emailSender.enviar(
-                                    evento.destinatarioEmail(),
-                                    evento.estadoFinal(),
-                                    evento.montoSolicitado(),
-                                    evento.fechaEvaluacion())
-                                    .invoke(() -> {
-                                        n.estado = NotificationEntity.EstadoNotif.ENVIADO;
-                                        n.enviadoEn = Instant.now();
-                                        n.intentos++;
-                                    }));
-                });
     }
 
     private Uni<Void> eliminar(String receiptHandle) {
@@ -326,7 +415,7 @@ public class NotificationConsumer {
 }
 ```
 
-## 7. `application.properties`
+## 8. `application.properties`
 
 ```properties
 quarkus.http.port=8083
@@ -356,7 +445,7 @@ aws.secretAccessKey=${AWS_SECRET_ACCESS_KEY:test}
 quarkus.smallrye-health.root-path=/q/health
 ```
 
-## 8. Levantar en modo dev
+## 9. Levantar en modo dev
 
 ```bash
 cd backend/ms-notifications/infrastructure/entry-points/app
@@ -416,10 +505,10 @@ psql -h localhost -p 5434 -U postgres -d notifications_db \
 
 ### Pruebas Unitarias — `EmailSenderServiceTest.java`
 
-Ubicación: `infrastructure/driven-adapters/postgres/src/test/java/com/msnotifications/postgres/repository/`
+Ubicación: `infrastructure/driven-adapters/ses/src/test/java/com/msnotifications/ses/adapter/`
 
 ```java
-package com.msnotifications.postgres.repository;
+package com.msnotifications.ses.adapter;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -521,10 +610,117 @@ class EmailSenderServiceTest {
 }
 ```
 
+### Prueba de Integración — `ProcesarNotificacionUseCaseIT.java`
+
+> `@QuarkusTest` con DevServices PostgreSQL. `EmailSenderService` se mockea con `@InjectMock`.
+> Las aserciones de estado usan `NotificationPort` (el real, respaldado por el adapter) — sin
+> importar `NotificationEntity` desde el módulo de tests del use case.
+
+Ubicación: `application/use-cases/src/test/java/com/msnotifications/usecase/`
+
+```java
+package com.msnotifications.usecase;
+
+import com.msnotifications.model.entity.EvaluacionCompletadaEvent;
+import com.msnotifications.ses.adapter.EmailSenderService;
+import com.msnotifications.usecase.port.NotificationPort;
+import io.quarkus.test.InjectMock;
+import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.vertx.RunOnVertxContext;
+import io.quarkus.test.vertx.TestReactiveTransaction;
+import io.smallrye.mutiny.Uni;
+import jakarta.inject.Inject;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.*;
+
+@QuarkusTest
+@RunOnVertxContext
+class ProcesarNotificacionUseCaseIT {
+
+    @Inject
+    ProcesarNotificacionUseCase useCase;
+
+    @Inject
+    NotificationPort notificationPort;
+
+    @InjectMock
+    EmailSenderService emailSender;
+
+    private EvaluacionCompletadaEvent evento(String evalId) {
+        return new EvaluacionCompletadaEvent(
+                evalId, "1713175071", "test@email.com", "Juan Test",
+                "APROBADO", new BigDecimal("5000.00"), "USD", 3,
+                "2026-05-05T14:30:00Z", "1.0");
+    }
+
+    // ── Happy path ────────────────────────────────────────────
+
+    @Test
+    @TestReactiveTransaction
+    Uni<Void> procesar_persiste_notificacion_con_estado_ENVIADO() {
+        var evalId = UUID.randomUUID().toString();
+        when(emailSender.enviar(any(), any(), any(), any()))
+                .thenReturn(Uni.createFrom().voidItem());
+
+        return useCase.procesar(evento(evalId), "sqs-msg-001")
+                .chain(() -> notificationPort.existeEnviada(UUID.fromString(evalId)))
+                .invoke(existe -> assertThat(existe).isTrue())
+                .replaceWithVoid();
+    }
+
+    @Test
+    @TestReactiveTransaction
+    Uni<Void> procesar_invoca_emailSender_exactamente_una_vez() {
+        when(emailSender.enviar(any(), any(), any(), any()))
+                .thenReturn(Uni.createFrom().voidItem());
+
+        return useCase.procesar(evento(UUID.randomUUID().toString()), "sqs-msg-002")
+                .invoke(() -> verify(emailSender, times(1))
+                        .enviar(eq("test@email.com"), eq("APROBADO"), any(), any()));
+    }
+
+    // ── Idempotencia ──────────────────────────────────────────
+
+    @Test
+    @TestReactiveTransaction
+    Uni<Void> segundo_procesamiento_del_mismo_evalId_no_genera_segundo_email() {
+        var evalId = UUID.randomUUID().toString();
+        when(emailSender.enviar(any(), any(), any(), any()))
+                .thenReturn(Uni.createFrom().voidItem());
+
+        return useCase.procesar(evento(evalId), "sqs-msg-003")
+                .chain(() -> useCase.procesar(evento(evalId), "sqs-msg-003b"))
+                .invoke(() -> verify(emailSender, times(1)).enviar(any(), any(), any(), any()))
+                .replaceWithVoid();
+    }
+
+    // ── Resiliencia ───────────────────────────────────────────
+
+    @Test
+    @TestReactiveTransaction
+    Uni<Void> fallo_de_ses_propaga_error_al_caller() {
+        when(emailSender.enviar(any(), any(), any(), any()))
+                .thenReturn(Uni.createFrom().failure(new RuntimeException("SES unavailable")));
+
+        return useCase.procesar(evento(UUID.randomUUID().toString()), "sqs-msg-004")
+                .onFailure().recoverWithItem((Void) null)
+                .invoke(() -> verify(emailSender, times(1)).enviar(any(), any(), any(), any()))
+                .replaceWithVoid();
+    }
+}
+```
+
 ### Prueba de Integración — `NotificationConsumerIT.java`
 
-> `@QuarkusTest` con DevServices PostgreSQL. SQS y SES se inyectan como mocks CDI
-> usando clientes async para controlar los mensajes sin LocalStack.
+> Valida que el consumer SQS orquesta correctamente: deserializa, delega al caso de uso,
+> elimina el mensaje en caso de éxito y NO lo elimina en caso de fallo.
 
 Ubicación: `infrastructure/entry-points/sqs-consumer/src/test/java/com/msnotifications/sqsconsumer/adapter/`
 
@@ -532,12 +728,10 @@ Ubicación: `infrastructure/entry-points/sqs-consumer/src/test/java/com/msnotifi
 package com.msnotifications.sqsconsumer.adapter;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.msnotifications.postgres.entity.NotificationEntity;
-import com.msnotifications.postgres.repository.EmailSenderService;
+import com.msnotifications.usecase.ProcesarNotificacionUseCase;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.vertx.RunOnVertxContext;
-import io.quarkus.test.vertx.TestReactiveTransaction;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
@@ -547,10 +741,10 @@ import software.amazon.awssdk.services.sqs.model.*;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
-import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
@@ -565,12 +759,12 @@ class NotificationConsumerIT {
     SqsAsyncClient sqsClient;
 
     @InjectMock
-    EmailSenderService emailSender;
+    ProcesarNotificacionUseCase useCase;
 
     private final ObjectMapper mapper = new ObjectMapper();
 
     private Message mensajeValido(String evaluacionId) throws Exception {
-        var evento = mapper.writeValueAsString(java.util.Map.of(
+        var cuerpo = mapper.writeValueAsString(Map.of(
                 "evaluacionId",      evaluacionId,
                 "cedula",            "1713175071",
                 "destinatarioEmail", "test@email.com",
@@ -584,7 +778,7 @@ class NotificationConsumerIT {
         return Message.builder()
                 .messageId(UUID.randomUUID().toString())
                 .receiptHandle("rh-" + evaluacionId)
-                .body(evento)
+                .body(cuerpo)
                 .build();
     }
 
@@ -598,79 +792,32 @@ class NotificationConsumerIT {
     // ── Happy path ────────────────────────────────────────────
 
     @Test
-    @TestReactiveTransaction
-    Uni<Void> procesar_mensaje_valido_guarda_notificacion_ENVIADO() throws Exception {
-        var evalId = UUID.randomUUID().toString();
-        var msg = mensajeValido(evalId);
-
-        when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
-                .thenReturn(CompletableFuture.completedFuture(
-                        ReceiveMessageResponse.builder().messages(List.of(msg)).build()));
-        when(emailSender.enviar(any(), any(), any(), any()))
-                .thenReturn(Uni.createFrom().voidItem());
-
-        return consumer.procesarMensajes()
-                .chain(() -> NotificationEntity.count(
-                        "evaluacionId = ?1 AND estado = ?2",
-                        UUID.fromString(evalId), NotificationEntity.EstadoNotif.ENVIADO))
-                .invoke(count -> assertThat(count).isEqualTo(1L))
-                .replaceWithVoid();
-    }
-
-    @Test
-    @TestReactiveTransaction
-    Uni<Void> procesar_mensaje_envia_email_exactamente_una_vez() throws Exception {
+    Uni<Void> procesar_mensaje_valido_delega_al_usecase() throws Exception {
         var msg = mensajeValido(UUID.randomUUID().toString());
 
         when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
                 .thenReturn(CompletableFuture.completedFuture(
                         ReceiveMessageResponse.builder().messages(List.of(msg)).build()));
-        when(emailSender.enviar(any(), any(), any(), any()))
+        when(useCase.procesar(any(), any()))
                 .thenReturn(Uni.createFrom().voidItem());
 
         return consumer.procesarMensajes()
-                .invoke(() -> verify(emailSender, times(1))
-                        .enviar(eq("test@email.com"), eq("APROBADO"), any(), any()));
+                .invoke(() -> verify(useCase, times(1)).procesar(any(), eq(msg.messageId())));
     }
 
     @Test
-    @TestReactiveTransaction
     Uni<Void> procesar_elimina_mensaje_de_sqs_tras_exito() throws Exception {
         var msg = mensajeValido(UUID.randomUUID().toString());
 
         when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
                 .thenReturn(CompletableFuture.completedFuture(
                         ReceiveMessageResponse.builder().messages(List.of(msg)).build()));
-        when(emailSender.enviar(any(), any(), any(), any()))
+        when(useCase.procesar(any(), any()))
                 .thenReturn(Uni.createFrom().voidItem());
 
         return consumer.procesarMensajes()
                 .invoke(() -> verify(sqsClient, times(1))
                         .deleteMessage(any(DeleteMessageRequest.class)));
-    }
-
-    // ── Idempotencia ──────────────────────────────────────────
-
-    @Test
-    @TestReactiveTransaction
-    Uni<Void> mensaje_duplicado_no_genera_segundo_email_ni_fila() throws Exception {
-        var evalId = UUID.randomUUID().toString();
-        var msg = mensajeValido(evalId);
-
-        when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
-                .thenReturn(CompletableFuture.completedFuture(
-                        ReceiveMessageResponse.builder().messages(List.of(msg)).build()));
-        when(emailSender.enviar(any(), any(), any(), any()))
-                .thenReturn(Uni.createFrom().voidItem());
-
-        // Primera ejecución: procesa
-        return consumer.procesarMensajes()
-                // Segunda ejecución: mismo mensaje (SQS at-least-once)
-                .chain(() -> consumer.procesarMensajes())
-                .invoke(() -> verify(emailSender, times(1)).enviar(any(), any(), any(), any()))
-                .chain(() -> NotificationEntity.count("evaluacionId = ?1", UUID.fromString(evalId)))
-                .invoke(count -> assertThat(count).isEqualTo(1L))
-                .replaceWithVoid();
     }
 
     // ── Resiliencia ───────────────────────────────────────────
@@ -694,14 +841,14 @@ class NotificationConsumerIT {
     }
 
     @Test
-    Uni<Void> fallo_de_ses_no_elimina_mensaje_de_sqs() throws Exception {
+    Uni<Void> fallo_del_usecase_no_elimina_mensaje_de_sqs() throws Exception {
         var msg = mensajeValido(UUID.randomUUID().toString());
 
         when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
                 .thenReturn(CompletableFuture.completedFuture(
                         ReceiveMessageResponse.builder().messages(List.of(msg)).build()));
-        when(emailSender.enviar(any(), any(), any(), any()))
-                .thenReturn(Uni.createFrom().failure(new RuntimeException("SES unavailable")));
+        when(useCase.procesar(any(), any()))
+                .thenReturn(Uni.createFrom().failure(new RuntimeException("use case failure")));
 
         return consumer.procesarMensajes()
                 .invoke(() -> verify(sqsClient, never())
@@ -709,13 +856,13 @@ class NotificationConsumerIT {
     }
 
     @Test
-    Uni<Void> cola_vacia_no_llama_a_emailSender() {
+    Uni<Void> cola_vacia_no_llama_al_usecase() {
         when(sqsClient.receiveMessage(any(ReceiveMessageRequest.class)))
                 .thenReturn(CompletableFuture.completedFuture(
                         ReceiveMessageResponse.builder().messages(List.of()).build()));
 
         return consumer.procesarMensajes()
-                .invoke(() -> verifyNoInteractions(emailSender));
+                .invoke(() -> verifyNoInteractions(useCase));
     }
 }
 ```
@@ -725,10 +872,13 @@ class NotificationConsumerIT {
 ```bash
 cd backend/ms-notifications
 
-# Unitarios (sin Docker)
-mvn test -pl infrastructure/driven-adapters/postgres
+# Unitarios EmailSenderService (sin Docker)
+mvn test -pl infrastructure/driven-adapters/ses
 
-# Integración (requiere Docker para DevServices PostgreSQL)
+# Integración caso de uso (requiere Docker para DevServices PostgreSQL)
+mvn test -pl application/use-cases
+
+# Integración consumer SQS
 mvn test -pl infrastructure/entry-points/sqs-consumer
 
 # Todos
@@ -745,4 +895,5 @@ mvn test
 - [ ] Mensaje duplicado ignorado (idempotencia por `evaluacion_id`)
 - [ ] Mensaje malformado no procesado, permanece en cola para reintento
 - [ ] `EmailSenderServiceTest` pasa: 5+ tests unitarios con SES mock
-- [ ] `NotificationConsumerIT` pasa: happy path, idempotencia, fallo SES, cola vacía
+- [ ] `ProcesarNotificacionUseCaseIT` pasa: happy path, idempotencia, fallo SES
+- [ ] `NotificationConsumerIT` pasa: delegación a use case, fallo use case, cola vacía
