@@ -11,12 +11,17 @@ import com.mscreditevaluation.model.valueobject.ScoreRiesgo;
 import com.mscreditevaluation.usecases.command.SolicitudCreditoCommand;
 import com.mscreditevaluation.usecases.exception.EvaluacionNotFoundException;
 import com.mscreditevaluation.usecases.result.EvaluacionCreditoResult;
+import com.mscreditevaluation.usecases.util.LogMask;
 import io.smallrye.mutiny.Uni;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.UUID;
 
 public class EvaluarCreditoUseCase {
+
+    private static final Logger log = LoggerFactory.getLogger(EvaluarCreditoUseCase.class);
 
     private final EvaluacionCreditoRepository repository;
     private final RiskServicePort riskService;
@@ -32,8 +37,14 @@ public class EvaluarCreditoUseCase {
 
     public Uni<EvaluacionCreditoResult> ejecutar(SolicitudCreditoCommand cmd) {
         Cedula cedula = new Cedula(cmd.cedula());
+        String cedulaMask = LogMask.cedula(cmd.cedula());
+
+        log.debug("Iniciando evaluación cedula={} monto={} plazo={}a evaluadoPorId={}",
+                cedulaMask, LogMask.monto(cmd.montoSolicitado()), cmd.plazoAnios(), cmd.evaluadoPorId());
 
         return riskService.consultarRiesgo(cmd.cedula())
+                .invoke(riskData -> log.debug("Datos de riesgo obtenidos cedula={} score={} deudaMensual={}",
+                        cedulaMask, riskData.score(), LogMask.monto(riskData.totalDeudaMensual())))
                 .flatMap(riskData -> {
                     var score   = new ScoreRiesgo(riskData.score());
                     var deuda   = Dinero.usd(riskData.totalDeudaMensual());
@@ -42,6 +53,9 @@ public class EvaluarCreditoUseCase {
 
                     EstadoEvaluacion estado = EvaluacionCredito.evaluar(
                             score, deuda, salario, monto, cmd.plazoAnios());
+
+                    log.info("Decisión de crédito cedula={} estado={} score={} evaluadoPorId={}",
+                            cedulaMask, estado, riskData.score(), cmd.evaluadoPorId());
 
                     EvaluacionCredito evaluacion = EvaluacionCredito.builder()
                             .cedula(cedula)
@@ -55,16 +69,24 @@ public class EvaluarCreditoUseCase {
                             .build();
 
                     return repository.guardar(evaluacion)
+                            .invoke(persistida -> log.debug("Evaluación persistida evaluacionId={} cedula={}",
+                                    persistida.getId(), cedulaMask))
                             .flatMap(persistida ->
                                 notificationPort.publicarEvaluacionCompletada(
                                         persistida, cmd.destinatarioEmail())
+                                    .onFailure().invoke(e -> log.warn(
+                                            "Publicación SQS fallida — evaluación completada sin notificación evaluacionId={} error={}",
+                                            persistida.getId(), e.getMessage()))
                                     .onFailure().recoverWithNull()
                                     .map(v -> new EvaluacionCreditoResult(persistida))
                             );
-                });
+                })
+                .onFailure().invoke(e -> log.error("Error en evaluación crédito cedula={} error={}",
+                        cedulaMask, e.getMessage(), e));
     }
 
     public Uni<EvaluacionCreditoResult> buscarPorId(UUID id) {
+        log.debug("Buscando evaluación id={}", id);
         return repository.buscarPorId(id)
                 .map(opt -> opt
                         .map(EvaluacionCreditoResult::new)
@@ -72,7 +94,9 @@ public class EvaluarCreditoUseCase {
     }
 
     public Uni<List<EvaluacionCreditoResult>> listarTodas(int page, int size) {
+        log.debug("Listando evaluaciones page={} size={}", page, size);
         return repository.listarTodas(page, size)
+                .invoke(list -> log.debug("Evaluaciones obtenidas cantidad={} page={}", list.size(), page))
                 .map(list -> list.stream().map(EvaluacionCreditoResult::new).toList());
     }
 }

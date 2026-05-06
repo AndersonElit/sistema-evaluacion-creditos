@@ -38,13 +38,14 @@ public class NotificationConsumer {
                         .maxNumberOfMessages(10)
                         .waitTimeSeconds(5)
                         .build()))
-                // Vuelve al contexto Vert.x tras el thread pool del AWS SDK
                 .emitOn(cmd -> ctx.runOnContext(v -> cmd.run()))
                 .chain(response -> {
                     var messages = response.messages();
-                    if (messages.isEmpty()) return Uni.createFrom().voidItem();
+                    if (messages.isEmpty()) {
+                        return Uni.createFrom().voidItem();
+                    }
 
-                    log.info("Procesando {} mensajes de SQS", messages.size());
+                    log.info("Mensajes SQS recibidos cantidad={}", messages.size());
 
                     return Multi.createFrom().iterable(messages)
                             .onItem().transformToUniAndConcatenate(this::procesarYEliminar)
@@ -55,10 +56,13 @@ public class NotificationConsumer {
 
     Uni<Void> procesarYEliminar(Message msg) {
         return deserializar(msg)
+                .invoke(evento -> log.info("Procesando mensaje SQS messageId={} evaluacionId={}",
+                        msg.messageId(), evento.evaluacionId()))
                 .chain(evento -> useCase.procesar(evento, msg.messageId()))
                 .chain(() -> eliminar(msg.receiptHandle()))
+                .invoke(v -> log.debug("Mensaje eliminado de SQS messageId={}", msg.messageId()))
                 .onFailure().invoke(e ->
-                        log.error("Error procesando mensaje {}: {}", msg.messageId(), e.getMessage()))
+                        log.error("Error procesando mensaje SQS messageId={} error={}", msg.messageId(), e.getMessage(), e))
                 .onFailure().recoverWithNull();
     }
 
@@ -67,6 +71,7 @@ public class NotificationConsumer {
             return Uni.createFrom().item(
                     objectMapper.readValue(msg.body(), EvaluacionCompletadaEvent.class));
         } catch (Exception e) {
+            log.error("Error deserializando mensaje SQS messageId={} error={}", msg.messageId(), e.getMessage(), e);
             return Uni.createFrom().failure(e);
         }
     }

@@ -29,6 +29,9 @@ public class EmailSenderService {
 
     public Uni<Void> enviar(String destinatario, String estadoFinal,
                              BigDecimal monto, String fecha) {
+        String destinatarioMask = maskEmail(destinatario);
+        log.debug("Enviando email via SES destinatario={} tipo={}", destinatarioMask, estadoFinal);
+
         String asunto = "APROBADO".equals(estadoFinal)
                 ? "Su solicitud de crédito fue APROBADA ✓"
                 : "Su solicitud de crédito fue RECHAZADA";
@@ -45,10 +48,10 @@ public class EmailSenderService {
                         .source(fromEmail)
                         .build()))
                 .emitOn(cmd -> ctx.runOnContext(v -> cmd.run()))
-                .invoke(r -> log.info("Email enviado a {}: {}", destinatario, estadoFinal))
+                .invoke(r -> log.info("Email enviado via SES destinatario={} tipo={}", destinatarioMask, estadoFinal))
                 .replaceWithVoid()
-                .onFailure().invoke(e -> log.error("Error enviando email a {}: {}",
-                        destinatario, e.getMessage()));
+                .onFailure().invoke(e -> log.error("Error enviando email SES destinatario={} tipo={} error={}",
+                        destinatarioMask, estadoFinal, e.getMessage(), e));
     }
 
     private String generarPlantilla(String estado, BigDecimal monto, String fecha) {
@@ -72,5 +75,11 @@ public class EmailSenderService {
               <hr><p style="color:#888;font-size:12px">Mensaje automático. No responder.</p>
             </body></html>
             """, monto, fecha);
+    }
+
+    private static String maskEmail(String email) {
+        if (email == null || !email.contains("@")) return "[email-inválido]";
+        int at = email.indexOf('@');
+        return email.charAt(0) + "***" + email.substring(at);
     }
 }

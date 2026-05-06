@@ -359,6 +359,42 @@ Si ms-risk falla repetidamente, el Circuit Breaker abre y se retorna 503 al clie
 
 ---
 
+## ADR-012: SLF4J con Enmascaramiento de PII para Logging Estructurado
+
+**Estado:** Aceptado
+**Fecha:** 2026-05-06
+**Contexto:** Los microservicios carecían de una estrategia de logging uniforme. Las clases emitían logs ad-hoc sin criterio de nivel, sin correlación entre microservicios y con datos personales (cédula, email) en texto plano. El documento `docs/10-sdd.md` identifica el logging de PII como una brecha de seguridad activa.
+
+### Opciones evaluadas
+
+| Criterio | Sin lineamiento (estado actual) | Logback + MDC | SLF4J nativo Quarkus + LogMask utilitario |
+|----------|---------------------------------|---------------|------------------------------------------|
+| Integración con Quarkus/JBoss Logging | ❌ inconsistente | Requiere config extra | **✅ SLF4J es el bridge nativo** |
+| Enmascaramiento de PII | ❌ ninguno | Manual por clase | **✅ utilidad centralizada LogMask** |
+| Propagación en código reactivo (Mutiny) | ❌ sin patrón | MDC no propaga entre threads | **✅ `.invoke()` para efectos de log** |
+| Formato estructurado (JSON) | ❌ ninguno | Requiere Logback JSON encoder | **✅ `quarkus.log.console.json` nativo** |
+| Configuración por entorno | ❌ hardcoded | Logback XML por perfil | **✅ via SSM + application.properties** |
+| Dependencia adicional | — | `logback-classic` + encoder JSON | **✅ cero — ya incluido en Quarkus** |
+
+### Decisión
+**SLF4J** (API) con **JBoss Logging** (proveedor, ya incluido en Quarkus) y una clase utilitaria `LogMask` por microservicio para enmascarar PII antes de emitir cualquier log.
+
+1. **Cero dependencias nuevas**: SLF4J + JBoss Logging es el stack de logging nativo de Quarkus. No se agrega `logback-classic` ni encoders adicionales.
+2. **Enmascaramiento centralizado**: `LogMask.cedula()`, `LogMask.email()`, `LogMask.monto()` — todos los puntos de log usan estas funciones. Si la regla de enmascaramiento cambia, se cambia en un solo lugar.
+3. **Patrón `.invoke()` para reactive**: en pipelines Mutiny no se usa `log.*` dentro de `.map()` (transforma el valor); se usa `.invoke()` (efecto secundario puro) para no alterar la cadena reactiva.
+4. **Log JSON activable por entorno**: `quarkus.log.console.json=true` via SSM en producción habilita ingestión por ELK o CloudWatch Logs sin cambio de código.
+5. **Niveles por capa**: `INFO` para hitos de negocio (solicitud recibida, decisión APROBADO/RECHAZADO, email enviado), `DEBUG` para detalle técnico (datos de adapters, queries), `WARN` para degradaciones recuperadas, `ERROR` para fallos que requieren atención.
+
+### Consecuencias
+- Se crea `LogMask` en el módulo `use-cases` de `ms-credit-evaluation` y `ms-notifications`.
+- Se agregan secciones `quarkus.log.*` en los `application.properties` de los tres microservicios.
+- Se añade `logger` declarado explícitamente en cada clase de cada capa (entry-points, use-cases, driven-adapters).
+- La cédula en texto plano nunca aparece en un log: verificable con `grep <cédula> <log-file>`.
+
+> Ver lineamiento completo en `docs/12-logging.md` y guía de implementación en `development-plan/14-logging.md`.
+
+---
+
 ## Resumen de Decisiones
 
 | ID | Decisión | Alternativa Descartada | Razón Principal |
@@ -374,3 +410,4 @@ Si ms-risk falla repetidamente, el Circuit Breaker abre y se retorna 503 al clie
 | ADR-009 | Notificaciones en ms-notifications independiente | Worker embebido en ms-credit-evaluation | SRP, resiliencia aislada, escalabilidad diferenciada |
 | ADR-010 | Keycloak como IAM | ms-auth propio (SmallRye JWT) | OIDC estándar, sin código de seguridad propio, revocación real, extensibilidad futura |
 | ADR-011 | AWS SSM Parameter Store para configuración | Variables de entorno (.env) | Tipado de secretos, paridad local/nube vía LocalStack, auditoría, eliminación de credenciales del repo |
+| ADR-012 | SLF4J nativo + LogMask utilitario | Logback + MDC | Cero dependencias nuevas, enmascaramiento centralizado de PII, patrón `.invoke()` para Mutiny |

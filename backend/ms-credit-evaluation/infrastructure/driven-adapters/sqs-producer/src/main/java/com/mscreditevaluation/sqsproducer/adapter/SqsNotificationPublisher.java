@@ -28,6 +28,8 @@ public class SqsNotificationPublisher implements NotificationPort {
     @Override
     public Uni<Void> publicarEvaluacionCompletada(EvaluacionCredito evaluacion,
                                                    String destinatarioEmail) {
+        log.debug("Publicando evento SQS evaluacionId={} estado={}",
+                evaluacion.getId(), evaluacion.getEstadoFinal());
         try {
             Map<String, Object> evento = Map.of(
                 "evaluacionId",      evaluacion.getId().toString(),
@@ -47,13 +49,14 @@ public class SqsNotificationPublisher implements NotificationPort {
                             .queueUrl(queueUrl)
                             .messageBody(body)
                             .build()))
-                    .invoke(r -> log.info("Evento publicado en SQS: evaluacionId={}, messageId={}",
+                    .invoke(r -> log.info("Evento publicado en SQS evaluacionId={} messageId={}",
                             evaluacion.getId(), r.messageId()))
                     .replaceWithVoid()
-                    .onFailure().invoke(e -> log.error("Error publicando en SQS para evaluacion {}: {}",
-                            evaluacion.getId(), e.getMessage()));
+                    .onFailure().invoke(e -> log.error("Error publicando en SQS evaluacionId={} error={}",
+                            evaluacion.getId(), e.getMessage(), e));
         } catch (Exception e) {
-            log.error("Error serializando evento SQS: {}", e.getMessage());
+            log.error("Error serializando evento SQS evaluacionId={} error={}",
+                    evaluacion.getId(), e.getMessage(), e);
             return Uni.createFrom().voidItem();
         }
     }

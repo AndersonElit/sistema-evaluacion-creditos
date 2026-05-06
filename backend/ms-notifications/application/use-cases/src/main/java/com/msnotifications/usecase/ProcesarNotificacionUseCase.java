@@ -3,6 +3,7 @@ package com.msnotifications.usecase;
 import com.msnotifications.model.entity.EvaluacionCompletadaEvent;
 import com.msnotifications.ses.adapter.EmailSenderService;
 import com.msnotifications.model.port.NotificationPort;
+import com.msnotifications.usecase.util.LogMask;
 import io.quarkus.hibernate.reactive.panache.common.WithTransaction;
 import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -26,11 +27,15 @@ public class ProcesarNotificacionUseCase {
     @WithTransaction
     public Uni<Void> procesar(EvaluacionCompletadaEvent evento, String mensajeSqsId) {
         UUID evalId = UUID.fromString(evento.evaluacionId());
+        String emailMask = LogMask.email(evento.destinatarioEmail());
+
+        log.debug("Iniciando procesamiento notificación evaluacionId={} tipo={} destinatario={}",
+                evalId, evento.estadoFinal(), emailMask);
 
         return notificationPort.existeEnviada(evalId)
                 .chain(yaEnviado -> {
                     if (yaEnviado) {
-                        log.info("Notificación ya enviada para evaluacion {} — ignorando", evalId);
+                        log.warn("Notificación duplicada ignorada — idempotencia activada evaluacionId={}", evalId);
                         return Uni.createFrom().voidItem();
                     }
 
@@ -44,7 +49,11 @@ public class ProcesarNotificacionUseCase {
                                     evento.estadoFinal(),
                                     evento.montoSolicitado(),
                                     evento.fechaEvaluacion())
-                                    .chain(() -> notificationPort.marcarEnviada(notifId)));
-                });
+                                    .chain(() -> notificationPort.marcarEnviada(notifId)))
+                            .invoke(v -> log.info("Notificación procesada y enviada evaluacionId={} destinatario={} tipo={}",
+                                    evalId, emailMask, evento.estadoFinal()));
+                })
+                .onFailure().invoke(e -> log.error("Error procesando notificación evaluacionId={} destinatario={} error={}",
+                        evalId, emailMask, e.getMessage(), e));
     }
 }
