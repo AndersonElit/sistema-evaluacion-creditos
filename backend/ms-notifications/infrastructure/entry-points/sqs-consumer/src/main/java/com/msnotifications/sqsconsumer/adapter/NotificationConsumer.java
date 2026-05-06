@@ -6,8 +6,10 @@ import com.msnotifications.postgres.entity.NotificationEntity;
 import com.msnotifications.postgres.repository.EmailSenderService;
 import io.quarkus.hibernate.reactive.panache.common.WithTransaction;
 import io.quarkus.scheduler.Scheduled;
+import io.quarkus.vertx.VertxContextSupport;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
+import io.vertx.core.Vertx;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -27,18 +29,33 @@ public class NotificationConsumer {
     @Inject SqsAsyncClient sqsClient;
     @Inject EmailSenderService emailSender;
     @Inject ObjectMapper objectMapper;
+    @Inject Vertx vertx;
 
     @ConfigProperty(name = "sqs.queue.url")
     String queueUrl;
 
     @Scheduled(every = "20s", delayed = "30s")
-    public Uni<Void> procesarMensajes() {
+    public void procesarMensajes() {
+        VertxContextSupport.subscribeWith(
+            this::pollSqs,
+            ignored -> {},
+            e -> log.error("Error procesando mensajes SQS: {}", e.getMessage(), e)
+        );
+    }
+
+    private Uni<Void> pollSqs() {
+        // Capturar el contexto duplicado creado por VertxContextSupport.subscribeWith.
+        // El CompletionStage de AWS SDK completa en su propio thread pool; emitOn
+        // devuelve la ejecución a este contexto Vert.x antes de llamar a procesarYEliminar.
+        var ctx = vertx.getOrCreateContext();
+
         return Uni.createFrom().completionStage(() ->
                 sqsClient.receiveMessage(ReceiveMessageRequest.builder()
                         .queueUrl(queueUrl)
                         .maxNumberOfMessages(10)
                         .waitTimeSeconds(5)
                         .build()))
+                .emitOn(cmd -> ctx.runOnContext(v -> cmd.run()))
                 .chain(response -> {
                     var messages = response.messages();
                     if (messages.isEmpty()) return Uni.createFrom().voidItem();
